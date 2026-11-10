@@ -11,8 +11,7 @@ Peano) lives in the
 [documentation](https://tobiasweinzierl.github.io/peano/), whose main
 page is generated from [`documentation/home.dox`](documentation/home.dox).
 Build it locally with `doxygen documentation/Doxyfile`.
-
+dddd
 - [Contribution guide](CONTRIBUTING.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
 - [Licence](LICENSE) (modified BSD)
-- [Citation metadata](CITATION.cff)
