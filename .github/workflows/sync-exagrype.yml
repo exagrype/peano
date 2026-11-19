@@ -53,12 +53,20 @@ jobs:
 
           number=$(gh api "repos/$REPO/pulls?state=open&base=$BRANCH&head=$UPSTREAM_OWNER:$BRANCH" --jq '.[0].number // empty')
           if [ -z "$number" ]; then
-            number=$(gh api "repos/$REPO/pulls" \
+            # The head branch is upstream's, which this repository's
+            # maintainers cannot be allowed to edit; GitHub refuses the PR
+            # (422, fork_collab) unless that is turned off explicitly. On an
+            # error gh prints GitHub's reply on stdout, which says why.
+            if ! response=$(gh api "repos/$REPO/pulls" \
               -f base="$BRANCH" \
               -f head="$UPSTREAM_OWNER:$BRANCH" \
+              -F maintainer_can_modify=false \
               -f title="Sync $BRANCH with $UPSTREAM_OWNER/$UPSTREAM_REPO" \
-              -f body="Opened by the \"Sync exagrype with peano-framework\" workflow. Merge it with a merge commit, never squash or rebase, so that upstream's commits keep their IDs." \
-              --jq '.number')
+              -f body="Opened by the \"Sync exagrype with peano-framework\" workflow. Merge it with a merge commit, never squash or rebase, so that upstream's commits keep their IDs."); then
+              echo "::error::Opening the PR failed: $response"
+              exit 1
+            fi
+            number=$(jq -r '.number' <<< "$response")
             echo "Opened #$number."
           else
             echo "#$number is already open."
@@ -77,7 +85,8 @@ jobs:
             exit 1
           fi
 
-          if ! gh api -X PUT "repos/$REPO/pulls/$number/merge" -f merge_method=merge --jq '.message'; then
-            echo "::error::Merging #$number failed. It stays open for a person to merge."
+          if ! response=$(gh api -X PUT "repos/$REPO/pulls/$number/merge" -f merge_method=merge); then
+            echo "::error::Merging #$number failed, so it stays open for a person to merge: $response"
             exit 1
           fi
+          jq -r '.message' <<< "$response"
