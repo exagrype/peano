@@ -6,7 +6,8 @@ name: Sync exagrype with peano-framework
 # a merge commit: squash or rebase would give upstream's commits new IDs.
 #
 # Scheduled workflows run only from the default branch, so this file lives on
-# exagrype and that branch stays one commit ahead of upstream.
+# exagrype. That branch is therefore never an exact copy of upstream: it has
+# this file, and a merge commit for every sync.
 #
 # Needs "Allow GitHub Actions to create and approve pull requests" under
 # Settings > Actions > General. A PR opened or merged with the workflow token
