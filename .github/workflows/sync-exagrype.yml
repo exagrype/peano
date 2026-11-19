@@ -1,0 +1,82 @@
+name: Sync exagrype with peano-framework
+
+# Keeps exagrype/peano:exagrype up to date with peano-framework/peano:exagrype.
+# The repository's ruleset requires a PR for every branch, so instead of the
+# "Sync fork" fast-forward the job opens a PR from upstream and merges it with
+# a merge commit: squash or rebase would give upstream's commits new IDs.
+#
+# Scheduled workflows run only from the default branch, so this file lives on
+# exagrype and that branch stays one commit ahead of upstream.
+#
+# Needs "Allow GitHub Actions to create and approve pull requests" under
+# Settings > Actions > General. A PR opened or merged with the workflow token
+# does not trigger other workflows.
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync
+    # Not in forks of this repository, nor upstream if the file ever gets there.
+    if: github.repository == 'exagrype/peano'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      UPSTREAM_OWNER: peano-framework
+      UPSTREAM_REPO: peano
+      BRANCH: exagrype
+    steps:
+      - name: Open and merge a PR from upstream
+        run: |
+          set -euo pipefail
+          upstream="$UPSTREAM_OWNER/$UPSTREAM_REPO:$BRANCH"
+
+          behind=$(gh api "repos/$REPO/compare/$BRANCH...$UPSTREAM_OWNER:$UPSTREAM_REPO:$BRANCH" --jq '.ahead_by')
+          if [ "$behind" -eq 0 ]; then
+            echo "$BRANCH already contains $upstream."
+            exit 0
+          fi
+          echo "$BRANCH is $behind commit(s) behind $upstream."
+
+          number=$(gh api "repos/$REPO/pulls?state=open&base=$BRANCH&head=$UPSTREAM_OWNER:$BRANCH" --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            number=$(gh api "repos/$REPO/pulls" \
+              -f base="$BRANCH" \
+              -f head="$UPSTREAM_OWNER:$BRANCH" \
+              -f title="Sync $BRANCH with $UPSTREAM_OWNER/$UPSTREAM_REPO" \
+              -f body="Opened by the \"Sync exagrype with peano-framework\" workflow. Merge it with a merge commit, never squash or rebase, so that upstream's commits keep their IDs." \
+              --jq '.number')
+            echo "Opened #$number."
+          else
+            echo "#$number is already open."
+          fi
+
+          # GitHub works out whether a PR can be merged in the background, and
+          # reports null until it has.
+          mergeable=null
+          for attempt in 1 2 3 4 5 6; do
+            mergeable=$(gh api "repos/$REPO/pulls/$number" --jq '.mergeable')
+            [ "$mergeable" != "null" ] && break
+            sleep 10
+          done
+          if [ "$mergeable" != "true" ]; then
+            echo "::error::#$number cannot be merged automatically (mergeable: $mergeable). Resolve it by hand."
+            exit 1
+          fi
+
+          if ! gh api -X PUT "repos/$REPO/pulls/$number/merge" -f merge_method=merge --jq '.message'; then
+            echo "::error::Merging #$number failed. It stays open for a person to merge."
+            exit 1
+          fi
