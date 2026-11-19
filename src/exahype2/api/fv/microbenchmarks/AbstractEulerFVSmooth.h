@@ -34,7 +34,7 @@ class exahype2::fv::rusanov::microbenchmark::AbstractEulerFVSmooth: public ::exa
   public:
     AbstractEulerFVSmooth();
 
-    static constexpr int    NumberOfUnknowns           = 4;
+    static constexpr int    NumberOfUnknowns           = 5;
     static constexpr int    NumberOfAuxiliaryVariables = 0;
     static constexpr int    PatchSize                  = 16;
     static constexpr int    HaloSize                   = 1;
@@ -76,11 +76,13 @@ virtual void initPointWisely(
 ) final;
 
 
-    
+    void reduceMaxEigenvalue(double eigenvalue);
+double getAndResetMaxEigenvalue();
 
   protected:
     static tarch::logging::Log  _log;
 
-    
+    double _maxEigenvalueOfTimeStep{0.0};
+tarch::multicore::BooleanSemaphore _maxEigenvalueSemaphore;
 };
 

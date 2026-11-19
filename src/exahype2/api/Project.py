@@ -77,6 +77,8 @@ class Project(object):
         self._abstract_overwrite = abstract_overwrite
 
         self._solvers = []
+        # What is realised: single solvers and hosts of several solvers, in the order of their addition
+        self._realisations = []
         self._domain_offset = [0.0, 0.0, 0.0]
         self._domain_size = [1.0, 1.0, 1.0]
         self._dimensions = 3
@@ -275,10 +277,27 @@ class Project(object):
         self._build_mode = mode
 
     def add_solver(self, solver):
-        self._solvers.append(solver)
+        """!
+
+        Add a solver, or a host of several coupled solvers
+
+        @param solver: exahype2.api.Solver or a coupling
+          A coupling (e.g. exagrype.api.FOSOSolver) brings its solvers along,
+          i.e. it has an attribute solvers. The project registers each of them
+          with its solver repository and README, but lets the coupling realise
+          them (generate_solver_realisation()), so it can couple the task
+          graphs of its solvers.
+
+        """
+        if hasattr(solver, "solvers"):
+            self._solvers.extend(solver.solvers)
+        else:
+            self._solvers.append(solver)
+        self._realisations.append(solver)
 
     def remove_all_solvers(self):
         self._solvers = []
+        self._realisations = []
         self._peano_project.cleanup()
 
     def __export_constants(self, peano_project):
@@ -471,7 +490,7 @@ thus appreciate any citation of the original release paper
         plot = peano4.api.taskgraph.Graph()
         mesh_adaptation = peano4.api.taskgraph.Graph()
 
-        for solver in self._solvers:
+        for solver in self._realisations:
             solver.generate_solver_realisation(
                 self, peano_project, setup_simulation, time_step, plot, mesh_adaptation
             )

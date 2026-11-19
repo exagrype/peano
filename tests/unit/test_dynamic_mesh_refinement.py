@@ -26,7 +26,7 @@ SCHEMES = {
 
 
 def _solver(scheme, criterion=True, **bounds):
-    solver = exahype2.api.Solver("Probe", 2, 0)
+    solver = exahype2.api.Solver("Probe", 2)
     solver.add_pde_term(exahype2.api.Flux(implementation="F[0] = Q[0]; F[1] = Q[1];"))
     solver.add_pde_term(exahype2.api.MaxEigenvalue(implementation="*lambdaMax = 1.0;"))
     if criterion:
@@ -36,15 +36,24 @@ def _solver(scheme, criterion=True, **bounds):
 
 
 def _last_task(solver, tmp_path):
-    """! The one task of the time step on which no other task depends"""
-    exahype2_project = types.SimpleNamespace(periodic_BC=[True, True, True])
+    """!
+    The one task of the time step on which no other task depends, apart from
+    the tasks that act at the end of the time step (such as the one that
+    computes the time step size)
+    """
+    exahype2_project = types.SimpleNamespace(periodic_BC=[True, True, True], _dimensions=3)
     peano_project = peano4.api.Project(["probe"], "probe", str(tmp_path))
     time_step = peano4.api.taskgraph.Graph()
     solver.numerical_scheme.construct_output(exahype2_project, peano_project, time_step)
     dependencies = {
         id(dependency) for task in time_step.tasks for dependency in task.dependencies
     }
-    [last] = [task for task in time_step.tasks if id(task) not in dependencies]
+    [last] = [
+        task
+        for task in time_step.tasks
+        if id(task) not in dependencies
+        and task.entity != Task.GridEntity.GLOBAL_END_OF_STEP
+    ]
     return last
 
 
@@ -55,7 +64,7 @@ def _criterion_body(action_set):
 @pytest.mark.parametrize("scheme", SCHEMES)
 def test_last_task_evaluates_criterion_and_switches_on_load_balancing(scheme, tmp_path):
     last = _last_task(_solver(scheme), tmp_path)
-    assert last.name == "Probe_Dynamic mesh refinement"
+    assert last.name == f"Probe_{exahype2.api.Solver.NumericalScheme.DYNAMIC_MESH_REFINEMENT_TASK_NAME}"
     assert last.entity == Task.GridEntity.CELL
     dynamic_mesh_refinement, load_balancing = last.action_sets
     assert isinstance(
@@ -83,7 +92,7 @@ def test_time_step_never_hands_events_to_peano(scheme, tmp_path):
 @pytest.mark.parametrize("scheme", SCHEMES)
 def test_no_criterion_means_no_evaluation(scheme, tmp_path):
     last = _last_task(_solver(scheme, criterion=False), tmp_path)
-    assert last.name == "Probe_Dynamic mesh refinement"
+    assert last.name == f"Probe_{exahype2.api.Solver.NumericalScheme.DYNAMIC_MESH_REFINEMENT_TASK_NAME}"
     [load_balancing] = last.action_sets
     assert isinstance(
         load_balancing, toolbox.loadbalancing.api.actionsets.LoadBalancing

@@ -11,7 +11,7 @@ import exagrype.api
 
 
 def _solver(quantities=None, sigma=8.0, rk_order=2):
-    solver = exagrype.api.CCZ4Solver("CCZ4")
+    solver = exagrype.api.FOCCZ4Solver("CCZ4")
     solver.numerical_scheme = exagrype.api.FD4WithKODissipation(
         solver,
         patch_size=5,
@@ -44,7 +44,7 @@ def test_scheme_widens_halo_to_three():
 
 
 def test_plain_fd4_keeps_halo_of_two():
-    solver = exagrype.api.CCZ4Solver("CCZ4")
+    solver = exagrype.api.FOCCZ4Solver("CCZ4")
     scheme = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(
         solver, patch_size=5, rk_order=2
     )
@@ -54,15 +54,15 @@ def test_plain_fd4_keeps_halo_of_two():
 
 def test_dissipation_applies_to_all_unknowns_by_default():
     solver = _solver()
-    assert solver.numerical_scheme.dissipative_quantities == list(range(59))
+    assert solver.numerical_scheme.dissipative_quantities == list(range(58))
 
 
 def test_quantities_accept_names_and_indices():
-    solver = _solver(quantities=["lapse", "G", 58, 0])
-    assert solver.numerical_scheme.dissipative_quantities == [0, 1, 2, 3, 4, 5, 16, 58]
+    solver = _solver(quantities=["lapse", "G", 57, 0])
+    assert solver.numerical_scheme.dissipative_quantities == [0, 1, 2, 3, 4, 5, 16, 57]
 
 
-@pytest.mark.parametrize("quantities", [["lapsee"], [59], [-1], [1.5], []])
+@pytest.mark.parametrize("quantities", [["lapsee"], ["K0"], [58], [-1], [1.5], []])
 def test_invalid_quantities_are_rejected(quantities):
     with pytest.raises((ValueError, TypeError)):
         _solver(quantities=quantities)
@@ -77,16 +77,20 @@ def test_dissipation_runs_after_right_hand_side_in_each_stage(tmp_path):
     solver = _solver(quantities=["lapse", "phi"], rk_order=2)
     tasks = _construct_time_step(solver, tmp_path)
     for stage in range(2):
-        action_sets = tasks[f"CCZ4_Evaluate right hand side stage {stage}"].action_sets
-        assert [type(action_set) for action_set in action_sets] == [
-            exahype2.api.rkfd4.actionsets.EvaluateRightHandSide,
-            exagrype.api.actionsets.AddKreissOligerDissipation,
+        evaluation = tasks[f"CCZ4_Evaluate Runge-Kutta right hand side stage {stage}"]
+        dissipation = tasks[f"CCZ4_Add Kreiss-Oliger dissipation stage {stage}"]
+        assert [type(a) for a in evaluation.action_sets] == [
+            exahype2.api.rkfd4.actionsets.EvaluateRungeKuttaRightHandSide
         ]
-        body = _body(action_sets[1])
+        assert [type(a) for a in dissipation.action_sets] == [
+            exagrype.api.actionsets.AddKreissOligerDissipation
+        ]
+        assert dissipation.dependencies == [evaluation]
+        body = _body(dissipation.action_sets[0])
         assert "::exagrype::ccz4::addKreissOligerDissipation(" in body
-        assert "constexpr int dissipativeQuantities[] = { 16, 54 };" in body
-        # Estimate slot of the stage: stage * 59 unknowns * 5^3 grid cells
-        assert f"fineGridCellCCZ4QRhsEstimates.value + {stage * 59 * 125}," in body
+        assert "constexpr int dissipativeQuantities[] = { 16, 24 };" in body
+        # Estimate slot of the stage: stage * 58 unknowns * 5^3 grid cells
+        assert f"fineGridCellCCZ4QRhsEstimates.value + {stage * 58 * 125}," in body
         assert "    3,\n" in body
         assert "    8.0,\n" in body
 
@@ -95,5 +99,5 @@ def test_kernel_call_takes_no_dissipation_argument(tmp_path):
     solver = _solver()
     _construct_time_step(solver, tmp_path)
     # The kernel gets the halo of three, and the functors follow patchData directly
-    assert "<\n    5,\n    3,\n    59,\n    0\n>" in solver.compute_kernel_call
+    assert "<\n    5,\n    3,\n    58,\n    0\n>" in solver.compute_kernel_call
     assert "(\n    patchData,\n    [&](" in solver.compute_kernel_call

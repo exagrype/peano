@@ -1,5 +1,6 @@
 # This file is part of the Peano project. For conditions of distribution and
 # use, please see the copyright notice at www.peano-framework.org
+import re
 from typing import List, Optional, Tuple
 
 import peano4.api
@@ -77,7 +78,30 @@ def translate(
        does not touch any mesh entity. It does not take part in the
        algorithm below. Instead, it is appended to the traversal holding
        its last dependency, even if this traversal repeats. A GLOBAL task
-       without dependencies goes into the very last traversal.
+       without dependencies goes into the very last traversal. Other tasks
+       may depend on a GLOBAL task. As it acts in prepareTraversal() and
+       unprepareTraversal() of the traversal that it is appended to, such a
+       task never shares a traversal with a task that it depends on: it
+       starts a traversal of its own.
+    6. **Start and end of the step.** GLOBAL_START_OF_STEP and
+       GLOBAL_END_OF_STEP tasks do not take part in the algorithm below,
+       either, and they never yield a traversal of their own.
+       The action sets of the former are the first ones of the first
+       traversal, those of the latter are the last ones of the last
+       traversal, behind the other GLOBAL tasks. Among the end-of-step tasks,
+       the dependencies decide the order. Why: The tasks act in
+       prepareTraversal() and unprepareTraversal() only, i.e. they have to be
+       the first and last thing that happens to the mesh in a step, and
+       fusing them into the existing traversals saves a mesh sweep. A start
+       task may not depend on any task. An end-of-step task which no task
+       depends on runs when everything else has finished. If another task
+       depends on an end-of-step task (@ref peano4.api.taskgraph.Graph.Graph.anchored_end_of_step_tasks()),
+       it cannot run at the very end. It is treated like a GLOBAL task
+       instead, i.e. it is appended to the traversal holding its last
+       dependency, and the dependent tasks start a traversal of their own
+       (constraint 5). If the first (last) traversal repeats,
+       the compiler places the tasks into a traversal of their own in front
+       of (behind) it, as they would otherwise run in every repetition.
 
 <br /><br />
 <div style="background-color: #fcc ; padding: 10px; border: 1px solid green;"> 
@@ -231,19 +255,36 @@ this option is hidden from the task compiler.
             (task, further_task) in non_fusable for task in tasks for further_task in further_tasks
         )
 
-    global_tasks = [task for task in graph.ordered_tasks() if task.entity == Task.GridEntity.GLOBAL]
-    order = [task for task in graph.ordered_tasks() if task.entity != Task.GridEntity.GLOBAL]
-    for task in order:
-        for dependency in task.dependencies:
-            assert dependency not in global_tasks, f"Task {task.name} depends on GLOBAL task {dependency.name}, which is not supported"
+    Entity = Task.GridEntity
+    all_tasks = graph.ordered_tasks()
+    start_tasks = [task for task in all_tasks if task.entity == Entity.GLOBAL_START_OF_STEP]
+    anchored_end_tasks = graph.anchored_end_of_step_tasks()
+    # Run at the very end of the step
+    end_tasks = [
+        task for task in all_tasks if task.entity == Entity.GLOBAL_END_OF_STEP and task not in anchored_end_tasks
+    ]
+    # Run at the end of the traversal of their last dependency. Topological order.
+    global_tasks = [
+        task for task in all_tasks if task.entity == Entity.GLOBAL or task in anchored_end_tasks
+    ]
+    order = [task for task in all_tasks if not task.entity.is_global]
+    for task in start_tasks:
+        assert not task.dependencies, f"Task {task.name} is GLOBAL_START_OF_STEP and hence may not depend on any task"
+
+    def depends_on_traversal_of(global_task: Task, tasks: List[Task]) -> bool:
+        """Does global_task end up in a traversal which holds one of the tasks, i.e. does it depend on one of them?"""
+        return any(
+            dependency in tasks or (dependency in global_tasks and depends_on_traversal_of(dependency, tasks))
+            for dependency in global_task.dependencies
+        )
 
     depth_of_task = {}
 
     def depth(task: Task) -> int:
+        # A start task has run before everything else, i.e. it does not delay anybody
+        dependencies = [dependency for dependency in task.dependencies if dependency not in start_tasks]
         if task not in depth_of_task:
-            depth_of_task[task] = (
-                0 if not task.dependencies else 1 + max(depth(dependency) for dependency in task.dependencies)
-            )
+            depth_of_task[task] = 0 if not dependencies else 1 + max(depth(dependency) for dependency in dependencies)
         return depth_of_task[task]
 
     layers = {}
@@ -279,13 +320,20 @@ this option is hidden from the task compiler.
         lowest_entity = min(task.entity.value for task in node)
         highest_entity = max(task.entity.value for task in node)
         is_repeating = len(node) == 1 and node[0].has_to_repeat
+        tasks_of_current_group = [task for group_node in current_group or [] for task in group_node]
+        # A task which depends on a global task runs after the traversal that holds the global task
+        waits_for_current_group = any(
+            depends_on_traversal_of(dependency, tasks_of_current_group)
+            for task in node
+            for dependency in task.dependencies
+            if dependency in global_tasks
+        )
         if (
             not is_repeating
             and current_group is not None
+            and not waits_for_current_group
             and lowest_entity >= highest_entity_of_current_group
-            and can_be_combined(
-                [task for group_node in current_group for task in group_node], node, respect_entity_order=True
-            )
+            and can_be_combined(tasks_of_current_group, node, respect_entity_order=True)
         ):
             current_group.append(node)
             highest_entity_of_current_group = max(highest_entity_of_current_group, highest_entity)
@@ -309,6 +357,19 @@ this option is hidden from the task compiler.
             groups[-1].append([global_task])
         else:
             groups.append([[global_task]])
+
+    # Constraint 6: The tasks of the start and the end of the step
+    def repeats(group):
+        return any(task.has_to_repeat for node in group for task in node)
+
+    if start_tasks:
+        if not groups or repeats(groups[0]):
+            groups.insert(0, [])
+        groups[0] = [[task] for task in start_tasks] + groups[0]
+    if end_tasks:
+        if not groups or repeats(groups[-1]):
+            groups.append([])
+        groups[-1] += [[task] for task in end_tasks]
 
     steps = [_create_step(group, identifier) for group in groups]
 
@@ -378,13 +439,16 @@ def _have_conflicting_data(
 def _task_name(task: Task) -> str:
     """!
 
-    Turn every whitespace-separated word into its own name segment,
-    capitalising only its first letter - a blind .title() would also
-    lower-case the rest of the word, which mangles existing camel case and
-    acronyms (e.g. "EulerFVSmooth" would become "Eulerfvsmooth").
+    Turn every word into its own name segment, capitalising only its first
+    letter - a blind .title() would also lower-case the rest of the word,
+    which mangles existing camel case and acronyms (e.g. "EulerFVSmooth"
+    would become "Eulerfvsmooth"). Words are separated by whitespace or by
+    any other character that C++ identifiers do not allow, such as the
+    hyphen in "Runge-Kutta", as the step name ends up in an enumerator.
 
     """
-    return "_".join(word[:1].upper() + word[1:] for word in task.name.split())
+    words = re.split(r"[^0-9A-Za-z_]+", task.name)
+    return "_".join(word[:1].upper() + word[1:] for word in words if word)
 
 
 def _merge_data_access(accesses: List["Task.DataAccess"]) -> "Task.DataAccess":

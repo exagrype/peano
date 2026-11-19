@@ -15,8 +15,9 @@ from .GradientRefinement import GradientRefinement
 from . import blockstructured
 from .blockstructured import DirichletBoundaryConditions
 from .blockstructured import SommerfeldBoundaryConditions
-from .KernelVariants import Target
+from .KernelVariants import Target, OutputLanguage, MemoryLayout
 from .Solver import Solver
+from .AuxiliaryVariables import AuxiliaryVariables
 from .SolverToCPPFiles import SolverToCPPFiles
 from . import fv
 from . import rungekutta

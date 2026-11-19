@@ -19,7 +19,7 @@ def _project(periodic_BC):
 
 
 def _solver(*boundary_terms, max_eigenvalue=True):
-    solver = exahype2.api.Solver("Probe", 2, 1)
+    solver = exahype2.api.Solver("Probe", 2)
     solver.add_pde_term(exahype2.api.Flux(implementation="F[0] = Q[0]; F[1] = Q[1];"))
     solver.add_pde_term(
         exahype2.api.InitPointWisely(
@@ -80,7 +80,7 @@ def test_get_boundary_conditions_returns_the_one_term():
         (
             lambda: _solver(_sommerfeld(), max_eigenvalue=False),
             [False] * 3,
-            "no non-stateless MaxEigenvalue",
+            "has no MaxEigenvalue",
         ),
         (
             lambda: _solver(_sommerfeld(origin=[0.0, 0.0])),
@@ -214,9 +214,11 @@ def test_sommerfeld_keeps_old_face_data_alive(scheme, tmp_path):
     setup, time_step = _realisation(
         scheme_factory, grid_construction_factory, solver, [False] * 3, tmp_path
     )
-    assert _accesses_to_persistent_face_data(solver, time_step) == {
-        peano4.api.taskgraph.Task.DataAccess.READ_AND_WRITE
-    }
+    # The roll over of the rkfd4 scheme declares the data as temporary, as the
+    # head of its chain of tasks declares it for the whole traversal
+    accesses = _accesses_to_persistent_face_data(solver, time_step)
+    accesses.discard(peano4.api.taskgraph.Task.DataAccess.TEMPORARY)
+    assert accesses == {peano4.api.taskgraph.Task.DataAccess.READ_AND_WRITE}
 
 
 @pytest.mark.parametrize("scheme", SCHEMES)
@@ -277,3 +279,14 @@ def test_periodic_domain_rejects_boundary_condition_term(scheme, tmp_path):
             [True, True, True],
             tmp_path,
         )
+
+
+def test_sommerfeld_prefers_stateless_max_eigenvalue():
+    get_term = exahype2.api.blockstructured.BoundaryConditions.get_max_eigenvalue_term_for_sommerfeld
+    solver = _solver(_sommerfeld())
+    assert not get_term(solver).stateless
+    stateless = exahype2.api.MaxEigenvalue(
+        implementation="*lambdaMax = 1.0;", stateless=True
+    )
+    solver.add_pde_term(stateless)
+    assert get_term(solver) is stateless

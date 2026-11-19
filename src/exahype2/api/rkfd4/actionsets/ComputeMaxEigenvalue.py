@@ -1,5 +1,6 @@
 # This file is part of the ExaHyPE2 project. For conditions of distribution and
 # use, please see the copyright notice at www.peano-framework.org
+from ...AuxiliaryVariables import code_to_assemble_kernel_input
 import peano4.api
 
 from .AbstractRKFD4ActionSet import AbstractRKFD4ActionSet
@@ -12,9 +13,13 @@ class ComputeMaxEigenvalue(AbstractRKFD4ActionSet):
 
     The action set runs after the final linear combination of a Runge-Kutta
     step, i.e. it sees the solution of the next time step in solver._patch.
-    It stores the maximum eigenvalue in solver._max_eigenvalue, from where
-    exahype2.api.rkfd4.actionsets.ComputeTimeStepSize reduces it into the
-    next time step size.
+    It stores the maximum eigenvalue in the cell data solver._max_eigenvalue.
+    It does nothing else: the reduction over the cells is a task of its own
+    (@ref exahype2.api.rkfd4.actionsets.ReduceMaxEigenvalue), and
+    exahype2.api.rkfd4.actionsets.ComputeTimeStepSize derives the next time
+    step size from its outcome. Why: The eigenvalue per cell stays available
+    for others, and the cell update, the eigenvalue and the reduction are
+    independent steps of the task graph that the compiler can overlap.
 
     """
 
@@ -40,9 +45,11 @@ class ComputeMaxEigenvalue(AbstractRKFD4ActionSet):
         ):
             return ""
         instance = self._solver.get_name_of_global_instance()
+        unknowns = f"fineGridCell{self._solver._patch.name}.value"
         return f"""
+  {code_to_assemble_kernel_input(self._solver, "kernelIn", unknowns, 0, lambda auxiliary: f"fineGridCell{auxiliary.patch.name}.value")}
   ::exahype2::CellData patchData(
-    fineGridCell{self._solver._patch.name}.value,
+    {"kernelIn.data()" if self._solver.auxiliary_variables else unknowns},
     marker.x(),
     marker.h(),
     repositories::{instance}.getMinTimeStamp(),

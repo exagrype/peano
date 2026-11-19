@@ -25,8 +25,8 @@ class Solver(abc.ABC):
     questions: what data does it need on the mesh, which action sets realise
     its algorithmic steps, and how does it plug into the code generation. This
     class holds exactly that common contract plus the bits of bookkeeping
-    (name, includes, solver constants, the unknowns/auxiliary_variables
-    variable-shortcut logic) that every concrete solver has historically
+    (name, includes, solver constants, the unknowns and the
+    auxiliary variables) that every concrete solver has historically
     reimplemented identically. It does not know anything about a concrete
     discretisation - it neither creates the actual mesh data structures nor
     the actual action sets, as this remains solver-specific and thus has to be
@@ -66,6 +66,12 @@ class Solver(abc.ABC):
 
         """
 
+        ## Name of the last task of each time step without the solver's name
+        ## as prefix, i.e. the task is called {SolverName}_ followed by this
+        ## string. It evaluates the adaptivity criterion and re-enables and
+        ## informs the load balancing.
+        DYNAMIC_MESH_REFINEMENT_TASK_NAME = "Dynamic mesh refinement and load balancing"
+
         def __init__(self, solver: "Solver"):
             """!
 
@@ -77,7 +83,9 @@ class Solver(abc.ABC):
             self._generator: Solver.NumericalScheme.NumericalSchemeGenerator = None
 
         @abc.abstractmethod
-        def construct_output(self, exahype2_project, peano_project, time_step):
+        def construct_output(
+            self, exahype2_project, peano_project, time_step, add_global_tasks=True
+        ):
             """!
             Has to be implemented by subclass
 
@@ -85,7 +93,114 @@ class Solver(abc.ABC):
               The task graph of the surrounding exahype2_project's time
               stepping phase, so the numerical scheme can add its own tasks
               into it.
+
+            @param add_global_tasks: bool
+              Whether the scheme adds the tasks that belong to the mesh as a
+              whole rather than to the solver: it switches the load
+              balancing off at the begin of the time step, and its last task
+              evaluates the adaptivity criterion and switches the load
+              balancing on again. If set, the scheme adds these tasks by calling
+              wrap_task_graph_in_load_balancing_and_amr_tasks() as its very
+              last step. A host that couples several solvers passes False,
+              as it wraps the concatenated graph itself.
             """
+
+        def wrap_task_graph_in_load_balancing_and_amr_tasks(self, time_step):
+            """!
+
+            Embed the time step's task graph into the global load balancing and AMR tasks
+
+            The routine adds two tasks to time_step:
+
+            - {SolverName}_Disable load balancing: switches the load
+              balancing off throughout the time step. All tasks of the graph
+              that do not depend on anything else wait for it.
+            - {SolverName}_Dynamic mesh refinement and load balancing
+              (DYNAMIC_MESH_REFINEMENT_TASK_NAME): evaluates the adaptivity
+              criterion if the solver has one, i.e. it collects the refine and
+              erase requests for the mesh adaptation phase, and then
+              switches the load balancing on again and informs it that the
+              time step has finished. It waits for all tasks of the graph that
+              nothing else waits for. Global tasks do not count: The
+              task runs last in the step, so no other task may wait for it.
+
+            The tasks pick up whatever is in time_step when the routine is
+            called. Consequently, construct_output() calls it last if its flag
+            add_global_tasks is set, i.e. after all tasks of the scheme have
+            been added. A coupling that merges the graphs of several solvers
+            (@ref page_exahype_programmers_guide_coupling) calls it on the merged graph
+            instead.
+
+            Schemes that do not own a mesh override the routine with an empty
+            one.
+
+            @param time_step: peano4.api.taskgraph.Graph
+              The graph to wrap. It receives the two tasks.
+
+            """
+            import toolbox.loadbalancing.api.actionsets
+            from .blockstructured.create_dynamic_mesh_refinement_action_set import (
+                create_dynamic_mesh_refinement_action_set,
+            )
+
+            Entity = peano4.api.taskgraph.Task.GridEntity
+            Access = peano4.api.taskgraph.Task.DataAccess
+            solver = self._solver
+
+            def is_global(task):
+                return task.entity.is_global
+
+            sources = [
+                task
+                for task in time_step.tasks
+                if not is_global(task) and not task.dependencies
+            ]
+            sinks = [
+                task
+                for task in time_step.tasks
+                if not is_global(task)
+                and not any(
+                    task in other.dependencies
+                    for other in time_step.tasks
+                    if not other.entity == Entity.GLOBAL_END_OF_STEP
+                )
+            ]
+
+            disable_task = peano4.api.taskgraph.Task(
+                name=f"{solver.name}_Disable load balancing", entity=Entity.CELL
+            )
+            disable_task.add_action_set(
+                toolbox.loadbalancing.api.actionsets.ToggleLoadBalancing(
+                    enable_load_balancing=False, plug_into_prepare_traversal=True
+                )
+            )
+            for source in sources:
+                source.add_dependency(disable_task)
+            time_step.add_task(disable_task)
+
+            refinement_task = peano4.api.taskgraph.Task(
+                name=f"{solver.name}_{self.DYNAMIC_MESH_REFINEMENT_TASK_NAME}",
+                entity=Entity.CELL,
+                may_spawn_background_tasks=False,
+            )
+            refinement_task.use_cell(solver._patch, Access.READ_AND_WRITE)
+            dynamic_mesh_refinement = create_dynamic_mesh_refinement_action_set(
+                solver,
+                self.patch_size,
+                guard=solver.grid_selector.createCellGuard(),
+                min_volume_size=self.min_volume_size,
+                max_volume_size=self.max_volume_size,
+            )
+            if dynamic_mesh_refinement is not None:
+                refinement_task.add_action_set(dynamic_mesh_refinement)
+            refinement_task.add_action_set(
+                toolbox.loadbalancing.api.actionsets.LoadBalancing(
+                    enable_load_balancing=True
+                )
+            )
+            for sink in sinks:
+                refinement_task.add_dependency(sink)
+            time_step.add_task(refinement_task)
 
         def create_default_mesh_adaptation(self) -> "Solver.MeshAdaptation":
             """!
@@ -119,7 +234,9 @@ class Solver(abc.ABC):
             def add_configuration(self, target: Target, stateless: bool):
                 self._configurations.append((target, stateless))
 
-            def construct_output(self, exahype2_project, peano_project, time_step):
+            def construct_output(
+                self, exahype2_project, peano_project, time_step, add_global_tasks=True
+            ):
                 pass
 
     class GridConstruction(abc.ABC):
@@ -399,7 +516,6 @@ class Solver(abc.ABC):
         self,
         name: str,
         unknowns: VariableSpecification,
-        auxiliary_variables: VariableSpecification,
     ):
         """!
 
@@ -412,10 +528,7 @@ class Solver(abc.ABC):
 
         unknowns: int or dict
           Number of unknowns per mesh entry (Finite Volume voxel, DG degree of
-          freedom, ...). Eventually, unknowns and auxiliary_variables are
-          merged into one big vector, but the solver still has to be able to
-          distinguish them, as only the unknowns are subject to the actual PDE
-          formulation. Can be specified either as a plain int, or as a dict
+          freedom, ...). Can be specified either as a plain int, or as a dict
           mapping variable name onto multiplicity (e.g.
           `{"rho": 1, "j": 3}` for a scalar density plus a 3d momentum). If
           dicts are used, the generated Abstract<SolverName> class hosts a
@@ -423,46 +536,24 @@ class Solver(abc.ABC):
           can write Q[Variables::j+1] instead of having to remember the
           offset into the unknowns array by hand.
 
-        auxiliary_variables: int or dict
-          Same semantics as unknowns, but for variables that may be
-          space-dependent yet do not change over time. Their names follow
-          the unknowns' names, as the auxiliary variables follow the
-          unknowns in Q.
+        Quantities which are space-dependent yet do not change over time are
+        not unknowns. Attach them to the solver as auxiliary variables via
+        add_auxiliary_variables().
 
-        If names are used at all, they have to cover all unknowns and all
-        auxiliary variables, i.e. you cannot pass a dict for one and a
-        non-zero int for the other.
-
-        The variables cannot be changed after construction: the numerical
+        The unknowns cannot be changed after construction: the numerical
         scheme sizes its data structures from them as soon as it is assigned
         to the solver.
 
         """
         self._name = name
 
-        # Offset of each named variable within Q. Empty if no names are used.
+        # Offset of each named unknown within Q. Empty if no names are used.
         self._variable_positions: Dict[str, int] = {}
 
         self._unknowns = self._register_variables(unknowns, 0)
-        self._auxiliary_variables = self._register_variables(
-            auxiliary_variables, self._unknowns
-        )
 
-        named_entries = sum(
-            sum(variables.values())
-            for variables in (unknowns, auxiliary_variables)
-            if isinstance(variables, dict)
-        )
-        if self._variable_positions and named_entries != (
-            self._unknowns + self._auxiliary_variables
-        ):
-            raise ValueError(
-                f"Solver {name}: the variable names {list(self._variable_positions)} "
-                f"cover only {named_entries} of the {self._unknowns} unknowns and "
-                f"{self._auxiliary_variables} auxiliary variables. If you name "
-                f"variables, name all unknowns and all auxiliary variables, i.e. "
-                f"pass dicts for both (or 0 for the one that is empty)."
-            )
+        # All sets of auxiliary variables in the order of their attachment
+        self._auxiliary_variables: List["AuxiliaryVariables"] = []
 
         self._user_solver_includes = ""
         self._solver_constants = ""
@@ -529,8 +620,7 @@ class Solver(abc.ABC):
         Translate a plain int or a name-to-multiplicity dict into a total
         variable count, and - for the dict case - add each name's position
         within Q to _variable_positions. Called once for unknowns (offset 0)
-        and once for auxiliary_variables (offset = number of unknowns), so
-        the two end up in one contiguous name/offset table.
+        so the names end up in one name/offset table.
 
         """
         if isinstance(variables, dict):
@@ -546,7 +636,7 @@ class Solver(abc.ABC):
             return variables
         else:
             raise TypeError(
-                "unknowns/auxiliary_variables have to be an int or a dict "
+                "unknowns have to be an int or a dict "
                 "mapping variable name onto multiplicity, but got "
                 f"{type(variables)}"
             )
@@ -556,7 +646,7 @@ class Solver(abc.ABC):
             "Name:              " + self._name + "\n"
             "Type:              " + self.__class__.__module__ + "\n"
             "Unknowns:          " + str(self._unknowns) + "\n"
-            "Auxiliary vars:    " + str(self._auxiliary_variables)
+            "Auxiliary vars:    " + ", ".join(str(m) for m in self._auxiliary_variables)
         )
 
     @property
@@ -661,8 +751,68 @@ class Solver(abc.ABC):
         return self._unknowns
 
     @property
-    def auxiliary_variables(self) -> int:
-        return self._auxiliary_variables
+    def auxiliary_variables(self) -> List["AuxiliaryVariables"]:
+        """! All sets of auxiliary variables in the order they have been attached """
+        return list(self._auxiliary_variables)
+
+    @property
+    def number_of_auxiliary_variables(self) -> int:
+        """! Total number of entries of all sets of auxiliary variables """
+        return sum(auxiliary.size for auxiliary in self._auxiliary_variables)
+
+    def auxiliary_variable_offset(self, auxiliary: "AuxiliaryVariables") -> int:
+        """!
+        Offset of the first entry of a set within the buffer the compute
+        kernels work on, i.e. the unknowns are followed by the sets in the
+        order of their attachment.
+        """
+        offset = self._unknowns
+        for candidate in self._auxiliary_variables:
+            if candidate is auxiliary:
+                return offset
+            offset += candidate.size
+        raise ValueError(f"{auxiliary.name} is not attached to solver {self._name}")
+
+    def add_auxiliary_variables(self, auxiliary: "AuxiliaryVariables"):
+        """!
+
+        Attach a set of auxiliary variables to the solver
+
+        Any number of sets can be attached. They have to be attached before
+        the code is generated. Each set is held by its own cell data object.
+        The first solver which a set is attached to owns it and initialises
+        it. Further solvers can attach the same set object and thereby share
+        the data. @ref exahype2.api.AuxiliaryVariables explains the impact
+        on the C++ signatures.
+
+        @param auxiliary: exahype2.api.AuxiliaryVariables
+
+        """
+        from .AuxiliaryVariables import AuxiliaryVariables
+
+        if not isinstance(auxiliary, AuxiliaryVariables):
+            raise TypeError(
+                f"auxiliary has to be a AuxiliaryVariables, but got {type(auxiliary)}"
+            )
+        if any(m is auxiliary for m in self._auxiliary_variables):
+            raise ValueError(
+                f"Solver {self._name} has the auxiliary variables {auxiliary.name} already"
+            )
+        if any(m.name == auxiliary.name for m in self._auxiliary_variables):
+            raise ValueError(
+                f"Solver {self._name} has other auxiliary variables of name {auxiliary.name} already"
+            )
+        if auxiliary.argument_name == auxiliary.name:
+            raise ValueError(f"Auxiliary variables {auxiliary.name} are not distinguishable from their argument")
+        if auxiliary.owner is None:
+            auxiliary._owner = self
+        self._auxiliary_variables.append(auxiliary)
+
+    def signature_of(self, term: PDETerm) -> str:
+        """! The signature of a PDE term including the pointers to the auxiliary variables """
+        from .AuxiliaryVariables import extend_signature
+
+        return extend_signature(term.SIGNATURE, self)
 
     @property
     def user_solver_includes(self) -> str:
@@ -707,21 +857,20 @@ class Solver(abc.ABC):
     def variable_names_per_entry(self) -> List[str]:
         """!
 
-        One name per entry of Q, i.e. for the unknowns followed by the
-        auxiliary variables, or the empty list if the variables carry no
-        names. A variable with multiplicity one keeps its name, whereas a
-        variable v with multiplicity k yields the names v[0], ..., v[k-1],
-        i.e. the entries Q[Variables::v+0], ..., Q[Variables::v+k-1].
-        Plotters use these names to label the entries in their output.
+        One name per entry of Q, i.e. for the unknowns, or the empty list if
+        the unknowns carry no names. A variable with multiplicity one keeps
+        its name, whereas a variable v with multiplicity k yields the names
+        v[0], ..., v[k-1], i.e. the entries Q[Variables::v+0], ...,
+        Q[Variables::v+k-1]. Plotters use these names to label the entries in
+        their output. The names of the auxiliary variables are available
+        from the sets.
 
         """
         positions = list(self._variable_positions.items())
         names = []
         for i, (variable_name, position) in enumerate(positions):
             next_position = (
-                positions[i + 1][1]
-                if i + 1 < len(positions)
-                else self._unknowns + self._auxiliary_variables
+                positions[i + 1][1] if i + 1 < len(positions) else self._unknowns
             )
             multiplicity = next_position - position
             if multiplicity == 1:
@@ -986,6 +1135,7 @@ class Solver(abc.ABC):
         time_step,
         plot,
         mesh_adaptation,
+        add_global_tasks=True,
     ):
         """!
         Turn this solver specification into a task graph and create the required C++ kernels/stubs
@@ -1000,6 +1150,15 @@ class Solver(abc.ABC):
           exahype2_project. They are owned by exahype2_project.generate_Peano4_project()
           and merely passed through here, so this solver can add its own
           tasks into them.
+
+        @param add_global_tasks: bool
+          Passed on to the numerical scheme, @see Solver.NumericalScheme.construct_output().
+          A host that realises several solvers into graphs of their own and
+          concatenates them (@ref page_exahype_programmers_guide_coupling)
+          passes False, i.e. the solver is realised as an intermediate step.
+          The host then wraps the concatenated graph.
+          Without the global tasks, the solver does not contribute to the
+          mesh adaptation phase either: The host constructs it.
 
         @return peano4.api.taskgraph.Graph
         """
@@ -1026,12 +1185,12 @@ class Solver(abc.ABC):
             exahype2_project, peano_project, setup_simulation
         )
         self.numerical_scheme.construct_output(
-            exahype2_project, peano_project, time_step
+            exahype2_project, peano_project, time_step, add_global_tasks
         )
         for plotter in self._plotters:
             plotter.construct_output(exahype2_project, peano_project, plot)
         self._add_wants_to_plot_to_solver()
-        if self.mesh_adaptation is not None:
+        if self.mesh_adaptation is not None and add_global_tasks:
             self.mesh_adaptation.construct_output(
                 exahype2_project, peano_project, mesh_adaptation
             )

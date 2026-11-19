@@ -135,8 +135,8 @@ def insert_density_floor(solver, time_step, tag, patch):
 class RusanovWithDensityFloor(exahype2.api.fv.RusanovWithExplicitEuler):
     """! Finite Volumes which insert the density floor after each update"""
 
-    def construct_output(self, exahype2_project, peano_project, time_step):
-        super().construct_output(exahype2_project, peano_project, time_step)
+    def construct_output(self, exahype2_project, peano_project, time_step, add_global_tasks=True):
+        super().construct_output(exahype2_project, peano_project, time_step, add_global_tasks)
         insert_density_floor(
             self._solver,
             time_step,
@@ -148,8 +148,8 @@ class RusanovWithDensityFloor(exahype2.api.fv.RusanovWithExplicitEuler):
 class RungeKuttaWithDensityFloor(exahype2.api.rkfd4.CentralDifferencesWithRungeKutta):
     """! Runge-Kutta Finite Differences which insert the density floor after each stage"""
 
-    def construct_output(self, exahype2_project, peano_project, time_step):
-        super().construct_output(exahype2_project, peano_project, time_step)
+    def construct_output(self, exahype2_project, peano_project, time_step, add_global_tasks=True):
+        super().construct_output(exahype2_project, peano_project, time_step, add_global_tasks)
         insert_density_floor(
             self._solver,
             time_step,
@@ -186,7 +186,7 @@ def create_solver(name, rk_order, density_floor):
       Differences with the Runge-Kutta scheme of this order.
 
     """
-    solver = exahype2.api.Solver(name, 4, 0)
+    solver = exahype2.api.Solver(name, 4)
     solver.add_user_solver_includes("#include <cmath>\n#include <algorithm>\n")
     solver.add_pde_term(exahype2.api.Flux(implementation=Flux, stateless=False))
     solver.add_pde_term(

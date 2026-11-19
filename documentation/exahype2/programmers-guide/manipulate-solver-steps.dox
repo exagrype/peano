@@ -1,6 +1,6 @@
 /**
 
-@page page_exahype2_solver_manipulate_solver_steps Manipulate an existing solver's steps (e.g. inserting additional sweeps)
+@page page_exahype_programmers_guide_manipulate_solver_steps Manipulate an existing solver's steps (e.g. inserting additional sweeps)
 
 \tableofcontents
 
@@ -116,9 +116,9 @@ below adds a density floor after each update of a Runge-Kutta scheme:
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class MySolversRungeKuttaScheme(exahype2.api.rkfd4.CentralDifferencesWithRungeKutta):
-  def construct_output(self, exahype2_project, peano_project, time_step):
+  def construct_output(self, exahype2_project, peano_project, time_step, add_global_tasks=True):
     ## Adds the scheme's tasks to time_step
-    super().construct_output(exahype2_project, peano_project, time_step)
+    super().construct_output(exahype2_project, peano_project, time_step, add_global_tasks)
     solver = self._solver
     for tag, patch in [
       (exahype2.api.Solver.SolutionUpdateTaskTag,         solver._patch),
@@ -164,8 +164,8 @@ this one tag:
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class RusanovWithPostprocessing(exahype2.api.fv.RusanovWithExplicitEuler):
-  def construct_output(self, exahype2_project, peano_project, time_step):
-    super().construct_output(exahype2_project, peano_project, time_step)
+  def construct_output(self, exahype2_project, peano_project, time_step, add_global_tasks=True):
+    super().construct_output(exahype2_project, peano_project, time_step, add_global_tasks)
     solver = self._solver
     for anchor in time_step.find_tasks(exahype2.api.Solver.SolutionUpdateTaskTag):
       if not anchor.name.startswith(solver.name + "_"):
@@ -219,7 +219,7 @@ documentation/exahype2/programmers-guide/manipulate-solver-steps-illustrations.p
 
 toolbox.blockstructured.api.ApplyPointWiselyToPatch runs a C++ snippet for each
 volume, or grid point, of a patch. The snippet may read and write Q, i.e. all
-unknowns and auxiliary variables of one volume, and read the volume's
+unknowns of one volume, and read the volume's
 position x. Your step can use any other action set as well, e.g. one which
 needs a halo or works on faces or vertices.
 
@@ -239,7 +239,7 @@ branch. Pass all tagged tasks of your solver to insert_after() instead:
 insert_after([update_cell, insert_patch_interior], task) makes task depend
 on both and rewires the successors of both to task. task then runs once per
 cell, after whichever of the two has completed the time step of this cell.
-exagrype.api.CCZ4Solver inserts its constraint enforcement this way.
+exagrype.api.FOCCZ4Solver inserts its constraint enforcement this way.
 
 The numerical scheme's construct_output() receives the time stepping graph
 only. The tags are only used within this graph, too. If you want to alter

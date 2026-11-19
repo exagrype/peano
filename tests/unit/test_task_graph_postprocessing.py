@@ -103,7 +103,8 @@ def _postprocessed_time_step(
     """! Time step graph of a CCZ4 solver with the given constraint enforcement"""
     import exagrype.api
 
-    solver = exagrype.api.CCZ4Solver("Probe")
+    solver = exagrype.api.FOCCZ4Solver("Probe")
+    solver.add_pde_term(exagrype.api.initialvalues.gauge_wave())
     solver.numerical_scheme = scheme_factory(solver)
     solver.grid_construction = grid_construction_factory(solver)
     solver.enforce_ccz4_constraint(enforce)
@@ -148,7 +149,7 @@ def test_no_constraint_enforcement_by_default(tmp_path):
     solver, tasks = _postprocessed_time_step(
         _runge_kutta,
         _runge_kutta_grid,
-        exagrype.api.CCZ4Solver.EnforceCCZ4Constraint.No,
+        exagrype.api.FOCCZ4Solver.EnforceCCZ4Constraint.No,
         tmp_path,
     )
     assert _enforcements(tasks) == []
@@ -160,7 +161,7 @@ def test_constraint_enforcement_after_each_runge_kutta_stage(tmp_path):
     solver, tasks = _postprocessed_time_step(
         _runge_kutta,
         _runge_kutta_grid,
-        exagrype.api.CCZ4Solver.EnforceCCZ4Constraint.IntermediateSteps,
+        exagrype.api.FOCCZ4Solver.EnforceCCZ4Constraint.IntermediateSteps,
         tmp_path,
     )
     assert len(_enforcements(tasks)) == 3
@@ -181,6 +182,12 @@ def test_constraint_enforcement_after_each_runge_kutta_stage(tmp_path):
         )
         assert "::exagrype::ccz4::enforceCCZ4constraints(Q);" in body
         assert f"fineGridCell{patch.name}.value" in body
+    # With adaptive time stepping, the maximum eigenvalue of the constrained
+    # solution is determined after the projection
+    assert (
+        tasks["Probe_Project solution onto faces"]
+        in tasks["Probe_Compute max eigenvalue"].dependencies
+    )
 
 
 def test_constraint_enforcement_after_final_runge_kutta_solution_only(tmp_path):
@@ -189,7 +196,7 @@ def test_constraint_enforcement_after_final_runge_kutta_solution_only(tmp_path):
     solver, tasks = _postprocessed_time_step(
         _runge_kutta,
         _runge_kutta_grid,
-        exagrype.api.CCZ4Solver.EnforceCCZ4Constraint.OnlyFinalSolution,
+        exagrype.api.FOCCZ4Solver.EnforceCCZ4Constraint.OnlyFinalSolution,
         tmp_path,
     )
     assert _enforcements(tasks) == [
@@ -205,7 +212,7 @@ def test_constraint_enforcement_after_both_writers_of_optimistic_finite_volumes(
     solver, tasks = _postprocessed_time_step(
         lambda solver: exahype2.api.fv.RusanovWithOptimisticExplicitEuler(solver, 4),
         _fv_grid,
-        exagrype.api.CCZ4Solver.EnforceCCZ4Constraint.OnlyFinalSolution,
+        exagrype.api.FOCCZ4Solver.EnforceCCZ4Constraint.OnlyFinalSolution,
         tmp_path,
     )
     [name] = _enforcements(tasks)
@@ -218,8 +225,7 @@ def test_constraint_enforcement_after_both_writers_of_optimistic_finite_volumes(
     [action_set] = clip.action_sets
     assert action_set.guard == solver.grid_selector.createCellGuard()
     for consumer in [
-        "Project on faces",
-        "Compute global CFL condition",
+        "Compute max eigenvalue",
         "Spawn patch interior update",
         "Discard patch interior",
     ]:
@@ -235,19 +241,25 @@ def test_constraint_enforcement_after_plain_finite_volumes(tmp_path):
     solver, tasks = _postprocessed_time_step(
         lambda solver: exahype2.api.fv.RusanovWithExplicitEuler(solver, 4),
         _fv_grid,
-        exagrype.api.CCZ4Solver.EnforceCCZ4Constraint.IntermediateSteps,
+        exagrype.api.FOCCZ4Solver.EnforceCCZ4Constraint.IntermediateSteps,
         tmp_path,
     )
     clip = tasks["Probe_Enforce CCZ4 constraints after Update cell"]
     assert _enforcements(tasks) == [clip.name]
-    assert tasks["Probe_Project on faces"].dependencies == [clip]
+    assert tasks["Probe_Compute max eigenvalue"].dependencies == [clip]
 
 
 def test_constraint_enforcement_rejects_unknown_scheme(tmp_path):
     import exagrype.api
 
     class UnknownScheme(exahype2.api.Solver.NumericalScheme):
-        def construct_output(self, exahype2_project, peano_project, time_step):
+        ## Required by the generation of the abstract solver
+        patch_size = 4
+        halo_size = 1
+
+        def construct_output(
+            self, exahype2_project, peano_project, time_step, add_global_tasks=True
+        ):
             pass
 
     class NoGridConstruction(exahype2.api.Solver.GridConstruction):
@@ -258,6 +270,28 @@ def test_constraint_enforcement_rejects_unknown_scheme(tmp_path):
         _postprocessed_time_step(
             UnknownScheme,
             NoGridConstruction,
-            exagrype.api.CCZ4Solver.EnforceCCZ4Constraint.OnlyFinalSolution,
+            exagrype.api.FOCCZ4Solver.EnforceCCZ4Constraint.OnlyFinalSolution,
             tmp_path,
         )
+
+
+def test_sink_tasks_of_forking_graph():
+    graph = peano4.api.taskgraph.Graph()
+    a, b, c, d = (_cell_task(name) for name in "abcd")
+    b.add_dependency(a)
+    c.add_dependency(a)
+    d.add_dependency(b)
+    for task in [a, b, c, d]:
+        graph.add_task(task)
+
+    assert graph.sink_tasks() == [c, d]
+
+
+def test_sink_tasks_of_chain_and_empty_graph():
+    graph = peano4.api.taskgraph.Graph()
+    assert graph.sink_tasks() == []
+    a, b = _cell_task("a"), _cell_task("b")
+    b.add_dependency(a)
+    graph.add_task(a)
+    graph.add_task(b)
+    assert graph.sink_tasks() == [b]

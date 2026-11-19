@@ -81,7 +81,7 @@ Compilers = {
 
 EnforceModes = {
     mode.name.lower(): mode
-    for mode in exagrype.api.CCZ4Solver.EnforceCCZ4Constraint
+    for mode in exagrype.api.FOCCZ4Solver.EnforceCCZ4Constraint
 }
 
 ## What a build variant fixes: the compile mode and the default setup size
@@ -331,7 +331,7 @@ def create_numerical_scheme(solver, arguments):
         if arguments.lopsided:
             options = dict(
                 right_hand_side_kernel=Kernel.CentralDifferencesWithLopsidedAdvection,
-                advection_velocity=exagrype.api.CCZ4Solver.ADVECTION_VELOCITY,
+                advection_velocity=exagrype.api.FOCCZ4Solver.ADVECTION_VELOCITY,
                 advected_quantities=solver.lopsided_advection_quantities(),
             )
         if arguments.ko_sigma > 0.0:
@@ -472,12 +472,12 @@ def main():
         executable="single-black-hole",
     )
 
-    solver = exagrype.api.CCZ4Solver(
+    solver = exagrype.api.FOCCZ4Solver(
         "CCZ4",
-        parameters={"CCZ4bs": 1.0, "CCZ4sk": 1.0},
-        initial_condition=exagrype.api.initialvalues.single_black_hole(
-            mass=arguments.mass
-        ),
+        parameters={"CCZ4b": 1, "CCZ4s": 1},
+    )
+    solver.add_pde_term(
+        exagrype.api.initialvalues.single_black_hole(mass=arguments.mass)
     )
     solver.enforce_ccz4_constraint(EnforceModes[arguments.enforce_constraints])
     solver.add_pde_term(

@@ -6,32 +6,25 @@ from typing import List, Union
 def resolve_quantities(
     solver,
     quantities: List[Union[str, int]],
-    include_auxiliary_variables: bool = False,
 ) -> List[int]:
     """!
 
-    Translate names and indices of the entries of Q into sorted indices
+    Translate names and indices of the unknowns Q into sorted indices
 
     @param solver: exahype2.api.Solver
       The solver whose entries of Q we refer to.
 
     @param quantities: List[str or int]
       A string is the name of a variable as passed to the solver (e.g.
-      "lapse" or "G" for exagrype.api.CCZ4Solver) and selects all of its
+      "lapse" or "G" for exagrype.api.FOCCZ4Solver) and selects all of its
       entries. An int is the index of one entry of Q. The list must not be
       empty.
-
-    @param include_auxiliary_variables: bool
-      If False, only the unknowns can be selected. Otherwise, the auxiliary
-      variables can be selected, too.
 
     @return List[int]
       Sorted indices without duplicates.
 
     """
-    entries = solver.unknowns + (
-        solver.auxiliary_variables if include_auxiliary_variables else 0
-    )
+    entries = solver.unknowns
     if len(quantities) == 0:
         raise ValueError(f"Solver {solver.name}: the list of quantities is empty")
     names = solver.variable_names_per_entry()[:entries]

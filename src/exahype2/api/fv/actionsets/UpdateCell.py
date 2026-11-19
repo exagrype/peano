@@ -2,6 +2,11 @@
 # use, please see the copyright notice at www.peano-framework.org
 from .AbstractFVActionSet import AbstractFVActionSet
 
+from ...AuxiliaryVariables import (
+    code_to_assemble_kernel_input,
+    code_to_allocate_kernel_output,
+    code_to_copy_back_kernel_output,
+)
 import peano4.api
 
 
@@ -18,20 +23,19 @@ class UpdateCell(AbstractFVActionSet):
     size, which are taken from the solver (getMinTimeStamp() and
     getMinTimeStepSize()) rather than from per-cell bookkeeping.
 
-    The compute kernel returns the maximum eigenvalue over the patch it has
-    just updated. The action set stores it in the cell data
-    solver._max_eigenvalue. exahype2.api.fv.actionsets.ComputeGlobalCFLCondition
-    reduces these values in a subsequent mesh traversal and derives the
-    next time step size from them.
+    The kernel does not return any eigenvalue: exahype2.api.fv.actionsets.ComputeMaxEigenvalue
+    determines it in a task of its own, and
+    exahype2.api.fv.actionsets.ComputeGlobalCFLCondition derives the next
+    time step size from it.
 
     """
 
-    def __init__(self, solver, guard, max_eigenvalue=None):
+    def __init__(self, solver, guard):
         """!
 
         @param solver: exahype2.api.Solver
-          Has to have solver._patch, solver._patch_with_halo and
-          solver._max_eigenvalue set - @see
+          Has to have solver._patch and
+          solver._patch_with_halo set - @see
           exahype2.api.fv.RusanovWithExplicitEuler.
 
         @param guard: str
@@ -40,25 +44,28 @@ class UpdateCell(AbstractFVActionSet):
           output of the solver's grid_selector (@see
           peano4.api.toolbox.GridSelector).
 
-        @param max_eigenvalue: peano4.api.datamodel.DaStGen2
-          The cell data the maximum eigenvalue goes into (first entry).
-          Defaults to solver._max_eigenvalue.
-
         """
         AbstractFVActionSet.__init__(self, solver)
         self.guard = guard
-        self._max_eigenvalue = max_eigenvalue if max_eigenvalue is not None else solver._max_eigenvalue
 
     def get_body_of_operation(self, operation_name):
         result = ""
         if operation_name == peano4.api.solversteps.ActionSet.OPERATION_TOUCH_CELL_FIRST_TIME:
+            solver = self._solver
+            unknowns_in  = f"fineGridCell{solver._patch_with_halo.name}.value"
+            unknowns_out = f"fineGridCell{solver._patch.name}.value"
+            has_parameters = len(solver.auxiliary_variables) > 0
+            kernel_in  = "kernelIn.data()" if has_parameters else unknowns_in
+            kernel_out = "kernelOut.data()" if has_parameters else unknowns_out
             result = f"""
-  double timeStamp    = repositories::{self._solver.get_name_of_global_instance()}.getMinTimeStamp();
-  double timeStepSize = repositories::{self._solver.get_name_of_global_instance()}.getMinTimeStepSize();
-  ::exahype2::CellData patchData(fineGridCell{self._solver._patch_with_halo.name}.value, marker.x(), marker.h(), timeStamp, timeStepSize, fineGridCell{self._solver._patch.name}.value);
-  {self._solver.compute_kernel_call}
+  double timeStamp    = repositories::{solver.get_name_of_global_instance()}.getMinTimeStamp();
+  double timeStepSize = repositories::{solver.get_name_of_global_instance()}.getMinTimeStepSize();
+  {code_to_assemble_kernel_input(solver, "kernelIn", unknowns_in, solver.numerical_scheme.halo_size)}
+  {code_to_allocate_kernel_output(solver, "kernelOut")}
+  ::exahype2::CellData patchData({kernel_in}, marker.x(), marker.h(), timeStamp, timeStepSize, {kernel_out});
+  {solver.compute_kernel_call}
+  {code_to_copy_back_kernel_output(solver, "kernelOut", unknowns_out)}
 
-  fineGridCell{self._max_eigenvalue.name}.setMaxEigenvalue( 0, patchData.maxEigenvalue[0] );
 """
         return result
 

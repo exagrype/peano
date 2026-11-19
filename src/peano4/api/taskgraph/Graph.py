@@ -19,6 +19,70 @@ class Graph:
     def add_task(self, task: Task):
         self.tasks.append(task)
 
+    def append(self, other: "Graph"):
+        """!
+
+        Concatenate another graph behind this one
+
+        The end of this graph is connected to the start of the other one:
+        Every task of the other graph that depends on nothing within the other
+        graph (its sources) additionally depends on every task of this graph
+        that no other task of this graph depends on (its sinks, @ref sink_tasks()).
+        If a sink is a global task, the sources of the other graph depend on it,
+        and the task compiler does not fuse them into its mesh sweep
+        (@ref peano4.api.taskgraph.Task.Task.GridEntity).
+        All tasks of both graphs are kept, with their own dependencies, and
+        none is dropped or merged, even if the two graphs do the same work in
+        parts. Removing such redundancy is up to the caller. The other graph
+        remains untouched, but shares its task objects with this one.
+
+        Use merge() to put two graphs next to each other instead.
+
+        @param other: peano4.api.taskgraph.Graph
+          The graph that follows this one.
+
+        """
+        shared = [t for t in other.tasks if any(t is existing for existing in self.tasks)]
+        if shared:
+            raise ValueError(
+                "Cannot append a graph that shares tasks with this one: "
+                + ", ".join(t.name for t in shared)
+            )
+        sinks = self.sink_tasks()
+        sources = [
+            task
+            for task in other.tasks
+            if not any(dependency in other.tasks for dependency in task.dependencies)
+        ]
+        for source in sources:
+            for sink in sinks:
+                source.add_dependency(sink)
+        self.tasks.extend(other.tasks)
+
+    def merge(self, other: "Graph"):
+        """!
+
+        Add all tasks of another graph to this graph, next to the existing ones
+
+        The tasks keep their dependencies, i.e. the result is the union of the
+        two graphs: they run independently of each other unless the caller adds
+        the dependencies that connect them. The other graph remains untouched
+        and shares its task objects with this one. A task which both graphs
+        hold is added only once.
+
+        This is how a host that couples several solvers
+        (@ref page_exahype_programmers_guide_coupling) puts the task graphs side by side which
+        the solvers have built independently, before it wires them. Use
+        append() to run one graph after the other.
+
+        @param other: peano4.api.taskgraph.Graph
+          The graph whose tasks are added.
+
+        """
+        for task in other.tasks:
+            if not any(task is existing for existing in self.tasks):
+                self.tasks.append(task)
+
     def find_tasks(self, *tags) -> List[Task]:
         """!
 
@@ -33,6 +97,42 @@ class Graph:
 
         """
         return [task for task in self.tasks if any(tag in task.tags for tag in tags)]
+
+    def source_tasks(self) -> List[Task]:
+        """!
+
+        Return all tasks which depend on no other task of this graph
+
+        These are the first tasks of the graph, i.e. the counterpart of
+        sink_tasks(). Dependencies on tasks outside of the graph are ignored.
+        The tasks are returned in the order in which they have been added to
+        the graph.
+
+        """
+        return [
+            task
+            for task in self.tasks
+            if not any(dependency in self.tasks for dependency in task.dependencies)
+        ]
+
+    def sink_tasks(self) -> List[Task]:
+        """!
+
+        Return all tasks which no other task of this graph depends on
+
+        These are the last tasks of the graph. A graph that forks, e.g.
+        because two solvers each add their own chain of tasks, has more than
+        one of them. Make a task depend on all of them to run it after the
+        whole graph, e.g. to synchronise the solvers
+        (@ref page_exahype_programmers_guide_coupling). The tasks are
+        returned in the order in which they have been added to the graph.
+
+        """
+        return [
+            task
+            for task in self.tasks
+            if not any(task in other.dependencies for other in self.tasks)
+        ]
 
     def insert_after(self, anchors: Union[Task, List[Task]], task: Task):
         """!
@@ -126,6 +226,14 @@ class Graph:
         graphs here are small) rather than caching it, so adding further
         tasks/dependencies after an earlier call is always reflected.
 
+        Tasks of the kind GLOBAL_START_OF_STEP come first, as they may not
+        depend on other tasks. Tasks of the kind GLOBAL_END_OF_STEP come last
+        (@ref peano4.api.taskgraph.Task.Task.GridEntity), with one exception:
+        If another task depends on them (@ref anchored_end_of_step_tasks()), they
+        end the traversal of their last dependency and keep their place
+        among the other tasks. Within each of the three parts, the order is
+        the one of the traversal.
+
         """
         order: List[Task] = []
         visited = set()
@@ -139,7 +247,57 @@ class Graph:
 
         for task in self.tasks:
             visit(task)
-        return order
+        Entity = Task.GridEntity
+        trailing = [
+            task
+            for task in order
+            if task.entity == Entity.GLOBAL_END_OF_STEP
+            and task not in self.anchored_end_of_step_tasks()
+        ]
+        return (
+            [task for task in order if task.entity == Entity.GLOBAL_START_OF_STEP]
+            + [
+                task
+                for task in order
+                if task.entity != Entity.GLOBAL_START_OF_STEP and task not in trailing
+            ]
+            + trailing
+        )
+
+    def anchored_end_of_step_tasks(self) -> List[Task]:
+        """!
+
+        End-of-step tasks which do not run at the very end of the step
+
+        A GLOBAL_END_OF_STEP task runs last in the last traversal. If another
+        task depends on it, this cannot hold: The task has to finish its
+        traversal first, and the dependent task then runs in a later one.
+        Such a task thus ends the traversal of its last dependency instead
+        (@ref peano4.api.taskgraph.compiler.FuseSteps.translate()). The same
+        holds for each end-of-step task which such a task depends on in turn.
+
+        @return List[Task]
+          The tasks in the order in which they have been added to the graph.
+
+        """
+        end_tasks = [
+            task for task in self.tasks if task.entity == Task.GridEntity.GLOBAL_END_OF_STEP
+        ]
+        anchored = {
+            end
+            for end in end_tasks
+            if any(end in task.dependencies for task in self.tasks if task not in end_tasks)
+        }
+        changed = True
+        while changed:
+            changed = False
+            for end in end_tasks:
+                if end not in anchored and any(
+                    end in other.dependencies for other in anchored
+                ):
+                    anchored.add(end)
+                    changed = True
+        return [end for end in end_tasks if end in anchored]
 
     def log_as_text(self, title: str = "Task graph"):
         """!
@@ -271,6 +429,8 @@ class Graph:
             Task.GridEntity.FACE: "tab:orange",
             Task.GridEntity.CELL: "tab:green",
             Task.GridEntity.GLOBAL: "tab:purple",
+            Task.GridEntity.GLOBAL_START_OF_STEP: "tab:red",
+            Task.GridEntity.GLOBAL_END_OF_STEP: "tab:brown",
         }
 
         # A state's box grows with its content: a fixed-height header
