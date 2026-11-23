@@ -73,10 +73,11 @@ jobs:
           fi
 
           # GitHub works out whether a PR can be merged in the background, and
-          # reports null until it has.
+          # reports null until it has. gh's --jq prints null as an empty line,
+          # hence tostring.
           mergeable=null
           for attempt in 1 2 3 4 5 6; do
-            mergeable=$(gh api "repos/$REPO/pulls/$number" --jq '.mergeable')
+            mergeable=$(gh api "repos/$REPO/pulls/$number" --jq '.mergeable | tostring')
             [ "$mergeable" != "null" ] && break
             sleep 10
           done
