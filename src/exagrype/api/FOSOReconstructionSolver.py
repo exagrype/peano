@@ -99,15 +99,17 @@ class FOSOReconstructionSolver(exahype2.api.Solver):
 
     ## Shortcomings
 
-    - Domain boundaries other than periodic ones and Sommerfeld boundary
-      conditions are not supported, as the reconstruction reads the halo of the
-      CCZ4 solver's unknowns before the Dirichlet boundary conditions
-      are applied. The reconstruction takes the same dependencies as the
-      CCZ4 solver's reconstruction, which makes it work in principle, but this has
-      not been tested.
+    - Only periodic domains are supported. The task graph is ready for
+      Dirichlet boundary conditions (the reconstruction waits for the
+      boundary task of the CCZ4 solver), but the generated code does not
+      compile: The boundary routines of the schemes call
+      dirichletBoundaryConditions() and the Sommerfeld routines without
+      the auxiliary variables, which the solver's signatures expect.
+      Furthermore, nobody sets the derivatives in the ghost grid cells
+      outside of the domain.
     - Supported are exahype2.api.rkfd4.CentralDifferencesWithRungeKutta
-      (fourth-order stencil, halo of at least three grid cells, one task per
-      Runge-Kutta stage) and exahype2.api.fv.RusanovWithExplicitEuler
+      (fourth-order stencil, the scheme's halo of two or more grid cells, one
+      task per Runge-Kutta stage) and exahype2.api.fv.RusanovWithExplicitEuler
       (second-order central differences, overlap of one is enough, a single
       task as there is a single stage). The optimistic Finite Volume scheme is
       not supported.
@@ -188,15 +190,9 @@ class FOSOReconstructionSolver(exahype2.api.Solver):
         scheme = ccz4.numerical_scheme
         match scheme:
             case exahype2.api.rkfd4.CentralDifferencesWithRungeKutta():
-                if scheme.HALO_SIZE < 3:
-                    raise ValueError(
-                        f"Reconstruction {name}: the halo of the scheme of {ccz4.name} has to be "
-                        f"at least three, but is {scheme.HALO_SIZE}. The solver evaluates fluxes and "
-                        "non-conservative products on the faces of the cell, i.e. it needs the "
-                        "derivatives one layer outside of the cell, and the fourth-order stencil reaches "
-                        "two further layers. Use a scheme with lopsided advection or "
-                        "exagrype.api.FD4WithKODissipation."
-                    )
+                # The stencil reaches two layers out, i.e. any halo of the scheme
+                # suffices. The derivatives of the halo come from the
+                # neighbour via the faces.
                 actionsets = exahype2.api.rkfd4.actionsets
                 reconstruction_function = "reconstructFirstDerivativesFD4"
                 stages = scheme.rk_order

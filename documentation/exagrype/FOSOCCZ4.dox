@@ -184,17 +184,24 @@ sweeps.
 ## FD4 specifics
 
 The routine recomputeAuxiliaryVariablesFD4_4thOrder() uses the stencil
-\f$ [1\ -8\ 0\ 8\ -1]/(12h) \f$ and needs a halo of three. The solver evaluates
-the fluxes and non-conservative products on the faces of a cell, i.e. it needs
-the derivatives left and right of each face. The derivatives are thus required
-one layer outside of the cell, and the stencil reaches two layers further out.
-The plain FD4 scheme of ExaHyPE only has a halo of two. exagrype.api.FOSOCCZ4Solver therefore
-requires a halo of at least three: exagrype.api.FOSOReconstructionSolver rejects
-numerical schemes with a smaller halo. A halo of three is given by
-exagrype.api.FD4WithKODissipation and by exahype2.api.rkfd4.CentralDifferencesWithRungeKutta
-with lopsided advection (as used by the benchmark). The wrapper
+\f$ [1\ -8\ 0\ 8\ -1]/(12h) \f$ on the grid cells of the cell itself, i.e. it
+needs a halo of two. The Finite Differences evaluate all terms at the grid cells,
+not on faces. The right-hand side of a grid cell needs the derivatives two grid
+cells to the left and right of it. Where these lie in the halo, they belong to the
+neighbouring cell, which has computed them as its own derivatives and projected
+them onto the shared face. The CCZ4 solver reconstructs them from there, as it
+does for the Finite Volumes below. exagrype.api.FOSOCCZ4Solver hence takes the
+halo of the scheme, exactly like the first-order solver: two for the plain
+exahype2.api.rkfd4.CentralDifferencesWithRungeKutta, three with lopsided advection
+or exagrype.api.FD4WithKODissipation. The wrapper
 exagrype::ccz4::reconstructFirstDerivativesFD4() hands the halo straight on to
 the routine.
+
+Until 2026-11 the routine also evaluated the derivatives one layer outside of the
+cell, with the argument of the Finite Volumes below, and the solver required a halo
+of three. The wrapper discarded this layer, and the diagonal blocks of the halo
+hold garbage, so only its derivatives along the normal were correct
+(src/exagrype/ccz4/adrs/0004-the-foso-reconstruction-takes-the-halo-of-the-scheme.md).
 
 
 ## FV specifics
@@ -239,9 +246,11 @@ auxiliary variables, which are effectively placeholders for the derivatives of
 the solution. If we want to reconstruct these guys, we again need a left and right 
 neighbour, and these neighbour accesses again exceed the local patch.
 
-Therefore, employing a FOSO scheme over FV requires a halo size of at least 2, and there
-has to be an additional data exchange step. Otherwise, the reconstruction would fail. 
-For FD4, the halo has to be at least 3. 
+Therefore, employing a FOSO scheme over FV requires an additional data exchange step,
+which hands the derivatives of the neighbour over via the faces. Otherwise, the
+reconstruction would fail. The Finite Differences evaluate no terms on faces, but
+they use the same exchange for the derivatives of their halo, i.e. FD4 needs no
+halo beyond the one of its stencil (see FD4 specifics). 
 
 
 # Lab notes

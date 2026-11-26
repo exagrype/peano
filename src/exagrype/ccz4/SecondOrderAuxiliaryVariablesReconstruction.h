@@ -25,32 +25,26 @@ namespace exagrype {
        * [1 -8 0 8 -1]
        * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
        *
-       * scaled with @f$ \frac{1}{12h} @f$. There is a fundamental problem with
-       * this variant which is worth mentioning: To evaluate this stencil, we
-       * need two further layers around every grid cell whose derivatives we
-       * want. As we also need the derivatives one layer outside of the patch
-       * (the fluxes and ncps on the patch's faces need them on both sides),
-       * the halo has to be at least three. For a given haloSize, we can never
-       * update the outermost two layers of the code.
+       * scaled with @f$ \frac{1}{12h} @f$. The stencil reaches two layers
+       * around every grid cell, so the routine computes the derivatives of the
+       * patch's own grid cells only and needs a halo of two.
        *
-       *
-       * ## Shortcomings
+       * ## Why not one layer outside of the patch
        *
        * @image html recomputeAuxiliaryVariablesFD4_4thOrder.png
        *
-       * As we use a fourth order scheme, we need two neighbours around each
-       * point to construct the outcome. That means, when we are given a patch
-       * with size 3 (left illustation above), we effectively can only calculate
-       * the auxiliary variables within the patch (green) and the first halo
-       * layer around it (brownish). This is illustrated to the right.
-       *
-       * There's one further complexity: we usually do not have the digonal
-       * values in ExaHyPE. What we really get is not the illustration above
+       * An earlier version also evaluated the derivatives one layer outside of
+       * the patch (brownish layer to the right), with the argument that the
+       * fluxes and non-conservative products on the patch's faces need the
+       * derivatives on both sides. This required a halo of three. The Finite
+       * Differences of exahype2.api.rkfd4 evaluate no terms on faces, though:
+       * The derivatives of the halo are computed by the neighbouring patch,
+       * which owns these grid cells, and are exchanged via the faces
+       * (exagrype.api.FOSOReconstructionSolver). Furthermore, Peano holds no
+       * diagonal neighbours: What we really get is not the illustration above
        * to the left but the one in the centre. The diagonal blocks hold
-       * garbage. As a consequence, the auxiliary data in the brown data layer
-       * to the right is not properly computed. In the left brown layer, only
-       * the x-derivatives are properly reconstructed. The y-derivatives
-       * contain garbage.
+       * garbage, so in the outer layer only the derivatives along its normal
+       * would be correct.
        *
        *
        * @param patchData          Host the actual patch data. For this
@@ -58,10 +52,9 @@ namespace exagrype {
        *   are properly set, and that the patch size in patchData is
        *   correct. All the other (meta data) properties have no influence
        *   and can hold any data.
-       * @param numberOfGridCellsPerPatchPerAxis Has to be at least 3, as
-       *   the halo is also at least three. More general, has to be bigger or
-       *   equal to haloSize.
-       * @param haloSize           Has to be at least 3.
+       * @param numberOfGridCellsPerPatchPerAxis Has to be bigger or equal to
+       *   haloSize.
+       * @param haloSize           Has to be at least 2.
        * @param unknowns           Typically 58, but can be bigger if you hold
        *   additional quantities within the PDE.
        * @param auxiliaryVariables Typically 0.
@@ -113,15 +106,15 @@ namespace exagrype {
        * The routine is a thin wrapper around
        * recomputeAuxiliaryVariablesFD4_4thOrder(), i.e. the fourth-order
        * stencil @f$ [1\ -8\ 0\ 8\ -1]/(12h) @f$. That routine expects the
-       * 58 entries per grid cell interleaved, and a halo of at least three.
+       * 58 entries per grid cell interleaved, and a halo of at least two.
        * The wrapper assembles such a buffer, calls the routine and copies
        * the derivatives of the cell's own grid cells back.
        *
-       * The halo of three is required, as the routine also evaluates the
-       * derivatives one layer outside of the cell: To evaluate the flux and
-       * the non-conservative product on a face of the cell, we need the
-       * derivatives left and right of the face, and the stencil reaches two
-       * further layers out.
+       * The routine computes the derivatives of the cell's own grid cells
+       * only. The CCZ4 solver obtains the derivatives of its halo from the
+       * neighbouring cells via the faces, as for the Finite Volumes
+       * (reconstructFirstDerivativesCentralDifferences()). A halo of two, the
+       * one of the plain Finite Differences, hence suffices.
        *
        * @param primaryVariablesWithHalo The 25 evolved unknowns per grid
        *   cell of the cell with its halo, i.e.
@@ -130,7 +123,7 @@ namespace exagrype {
        * @param patchSize Extent of the cell (without halo).
        * @param numberOfGridCellsPerPatchPerAxis Grid cells per axis within
        *   the cell.
-       * @param haloSize Has to be at least three.
+       * @param haloSize Has to be at least two.
        * @param firstDerivatives Output, 33 entries per grid cell of the cell
        *   (without halo) in the layout of a patch. Entry k corresponds to
        *   entry 25+k of the 58 CCZ4 unknowns.
@@ -176,8 +169,8 @@ namespace exagrype {
          * variables. The graident is calculated using a 5-point stencil in 1D which has
          * 2 neighbouring cells on each side of the central one. The computation requires
          * us to have access to 2 layers around each grid cell. The caller
-         * (recomputeAuxiliaryVariablesFD4_4thOrder()) evaluates it one layer
-         * outside of the patch, i.e. it needs a halo of three.
+         * (recomputeAuxiliaryVariablesFD4_4thOrder()) evaluates it on the
+         * patch's own grid cells, i.e. it needs a halo of two.
          *
          */
         void recomputeAuxiliaryVariablesFD4_4thOrder_LoopBody(

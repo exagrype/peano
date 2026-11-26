@@ -1,6 +1,7 @@
 import pytest
 
 import peano4.api
+import peano4.api.solversteps
 import peano4.api.taskgraph
 import exahype2.api
 import exagrype.api
@@ -33,7 +34,7 @@ def _configure(pair, enforce=None):
     """! Configure the CCZ4 solver of the pair with FD4 and lopsided advection"""
     solver = pair.ccz4
     Kernel = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta.RightHandSideKernel
-    # Lopsided advection widens the halo to the three that the reconstruction needs
+    # Lopsided advection widens the halo to three
     pair.numerical_scheme = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(
         solver,
         9,
@@ -478,14 +479,42 @@ def test_reconstruction_rejects_unsupported_schemes(tmp_path):
         pair.reconstruction.create_task_graph(None, None, 0, 1)
 
 
-def test_reconstruction_rejects_a_halo_of_two(tmp_path):
+def test_reconstruction_takes_the_halo_of_two_of_the_plain_scheme(tmp_path):
+    """!
+
+    src/exagrype/ccz4/adrs/0004-the-foso-reconstruction-takes-the-halo-of-the-scheme.md:
+    the reconstruction computes the derivatives of the cell only, so the halo of
+    the plain Finite Differences suffices
+
+    """
     pair = exagrype.api.FOSOSolver("SO")
+    solver = pair.ccz4
     pair.numerical_scheme = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(
-        pair.ccz4, 9, rk_order=4
+        solver, 9, rk_order=4
     )
-    assert pair.ccz4.numerical_scheme.HALO_SIZE == 2
-    with pytest.raises(ValueError, match="at least three"):
-        pair.reconstruction.create_task_graph(None, None, 0, 1)
+    solver.grid_construction = exahype2.api.rkfd4.SetupSimulationOverRegularGrid(
+        solver, volume_size=1.0 / 27.0
+    )
+    assert solver.numerical_scheme.HALO_SIZE == 2
+    _realise_pair(pair, tmp_path)
+    assert pair.reconstruction.numerical_scheme.halo_size == 2
+    Functor = exagrype.api.actionsets.ApplyReconstructionFunctor
+    for stage in range(4):
+        graph = pair.reconstruction.numerical_scheme.stage_graphs[stage]
+        (functor,) = [
+            action_set
+            for task in graph.tasks
+            for action_set in task.action_sets
+            if isinstance(action_set, Functor)
+        ]
+        body = functor.get_body_of_operation(
+            peano4.api.solversteps.ActionSet.OPERATION_TOUCH_CELL_FIRST_TIME
+        )
+        # Patch size 9, halo 2
+        assert (
+            "reconstructFirstDerivativesFD4(oldQWithHalo, marker.h(), 9, 2, newQ)"
+            in body
+        )
 
 
 def test_reconstruction_adapts_to_the_larger_halo_of_the_dissipation_scheme(tmp_path):

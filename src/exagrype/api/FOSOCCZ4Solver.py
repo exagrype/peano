@@ -45,13 +45,14 @@ class FOSOCCZ4Solver(CCZ4SolverBase):
     exahype2.api.fv.RusanovWithExplicitEuler. The latter reconstructs the
     derivatives with second-order central differences.
 
-    For Finite Differences, the numerical scheme has to have a halo of at least three grid cells:
-    The solver needs the derivatives one layer outside of its cell (the
-    fluxes and non-conservative products on the cell's faces use the values
-    left and right of the face), and the stencil of the reconstruction
-    reaches two layers further out. The plain scheme has a halo of two;
-    lopsided advection or exagrype.api.FD4WithKODissipation widen it to
-    three. The reconstruction solver rejects a smaller halo.
+    For Finite Differences, the solver takes the halo of the numerical
+    scheme, as the first-order solver does: two grid cells for the plain
+    scheme, three for lopsided advection or exagrype.api.FD4WithKODissipation.
+    The reconstruction computes the derivatives of the cell's own grid cells
+    only, and its stencil reaches two layers out. The derivatives of the halo
+    are the ones which the neighbouring cells have computed, exchanged via the
+    faces
+    (src/exagrype/ccz4/adrs/0004-the-foso-reconstruction-takes-the-halo-of-the-scheme.md).
 
     @ref page_exagrype_fo_so_project_plan for the design and its status.
 
