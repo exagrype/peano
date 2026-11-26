@@ -5,6 +5,7 @@
 from typing import Dict, List, Tuple, Union
 
 import exahype2.api
+from exahype2.api.Quantities import resolve_auxiliary_derivatives
 
 from . import initialvalues
 from .CCZ4SolverBase import CCZ4SolverBase
@@ -53,6 +54,22 @@ class FOSOCCZ4Solver(CCZ4SolverBase):
     are the ones which the neighbouring cells have computed, exchanged via the
     faces
     (src/exagrype/ccz4/adrs/0004-the-foso-reconstruction-takes-the-halo-of-the-scheme.md).
+
+    The second derivatives are first derivatives of the derivatives, except
+    for the pure ones: With Finite Differences, the scheme computes the
+    derivative of, e.g., dLapse[0] along x as the compact second derivative
+    of the lapse. Hand auxiliary_derivatives() to the scheme for this, i.e.
+
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(
+      solver, patch_size, rk_order=4,
+      auxiliary_derivatives = solver.auxiliary_derivatives(),
+      ...
+    )
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    The solver refuses a Finite Difference scheme without this table
+    (src/exagrype/ccz4/adrs/0006-the-second-order-solver-uses-compact-second-derivatives.md).
 
     @ref page_exagrype_fo_so_project_plan for the design and its status.
 
@@ -224,11 +241,14 @@ class FOSOCCZ4Solver(CCZ4SolverBase):
             ]
         return result
 
-    @classmethod
-    def derivative_table(cls) -> Tuple[List[int], List[int], List[float]]:
+    def derivative_table(self) -> Tuple[List[int], List[int], List[float]]:
         """!
 
         auxiliary_derivatives() per entry of the auxiliary variables
+
+        The names are resolved as for the compact second derivatives of the
+        Finite Differences (@ref exahype2.api.Quantities.resolve_auxiliary_derivatives()),
+        i.e. the reconstruction and the kernels read the same rows.
 
         @return differentiated_unknown, axis, factor
           Three lists with one element per entry of DerivativeUnknowns: the
@@ -239,52 +259,70 @@ class FOSOCCZ4Solver(CCZ4SolverBase):
           not cover each derivative exactly once.
 
         """
-
-        def entries(variables: Dict[str, int], name: str) -> List[int]:
-            variable, _, index = name.partition("[")
-            if variable not in variables:
-                raise ValueError(
-                    f"{cls.__name__}: {name!r} is no variable of {sorted(variables)}"
-                )
-            names = list(variables)
-            first = sum(variables[other] for other in names[: names.index(variable)])
-            if index:
-                position = int(index.rstrip("]"))
-                if not 0 <= position < variables[variable]:
-                    raise ValueError(
-                        f"{cls.__name__}: {name!r} exceeds the {variables[variable]} "
-                        f"entries of {variable}"
-                    )
-                return [first + position]
-            return list(range(first, first + variables[variable]))
-
-        size = cls._number_of_derivatives()
-        differentiated_unknown = [None] * size
-        axis = [None] * size
-        factor = [None] * size
-        for derivative, unknown, direction, scaling in cls.auxiliary_derivatives():
-            targets = entries(cls.DerivativeUnknowns, derivative)
-            sources = entries(cls.Unknowns, unknown)
-            if len(targets) != len(sources):
-                raise ValueError(
-                    f"{cls.__name__}: {derivative!r} has {len(targets)} entries, "
-                    f"but {unknown!r} has {len(sources)}"
-                )
-            for target, source in zip(targets, sources):
-                if differentiated_unknown[target] is not None:
-                    raise ValueError(
-                        f"{cls.__name__}: derivative entry {target} is defined twice"
-                    )
-                differentiated_unknown[target] = source
-                axis[target] = direction
-                factor[target] = scaling
-        missing = [index for index, value in enumerate(axis) if value is None]
+        rows = resolve_auxiliary_derivatives(self, self.auxiliary_derivatives())
+        offset = self.auxiliary_variable_offset(self.derivatives)
+        size = self.derivatives.size
+        missing = sorted(
+            set(range(size)) - {derivative - offset for derivative, _, _, _ in rows}
+        )
         if missing:
             raise ValueError(
-                f"{cls.__name__}: auxiliary_derivatives() does not define the "
+                f"Solver {self.name}: auxiliary_derivatives() does not define the "
                 f"derivative entries {missing}"
             )
-        return differentiated_unknown, axis, factor
+        rows = sorted(rows)
+        return (
+            [unknown for _, unknown, _, _ in rows],
+            [axis for _, _, axis, _ in rows],
+            [factor for _, _, _, factor in rows],
+        )
+
+    def generate_solver_realisation(
+        self,
+        exahype2_project,
+        peano_project,
+        setup_simulation,
+        time_step,
+        plot,
+        mesh_adaptation,
+        add_global_tasks=True,
+    ):
+        """!
+
+        Check the scheme, then realise the solver as any CCZ4 solver
+
+        The Finite Differences have to compute the pure second derivatives
+        with the compact stencil, i.e. the user has to hand
+        auxiliary_derivatives() to the scheme (strict:
+        src/exagrype/ccz4/adrs/0006-the-second-order-solver-uses-compact-second-derivatives.md).
+        The solver checks this here rather than filling the table into the
+        scheme itself, as it must not change the scheme which the user has
+        created, and as the script states what the kernels do.
+
+        @exception ValueError if the scheme is an
+          exahype2.api.rkfd4.CentralDifferencesWithRungeKutta without the table
+          of this solver.
+
+        """
+        scheme = self.numerical_scheme
+        if isinstance(scheme, exahype2.api.rkfd4.CentralDifferencesWithRungeKutta):
+            expected = resolve_auxiliary_derivatives(self, self.auxiliary_derivatives())
+            if scheme.auxiliary_derivatives != expected:
+                raise ValueError(
+                    f"Solver {self.name}: the scheme has to compute the pure second "
+                    "derivatives of the unknowns with the compact stencil. Pass "
+                    "auxiliary_derivatives=solver.auxiliary_derivatives() to "
+                    f"{type(scheme).__name__}."
+                )
+        super().generate_solver_realisation(
+            exahype2_project,
+            peano_project,
+            setup_simulation,
+            time_step,
+            plot,
+            mesh_adaptation,
+            add_global_tasks,
+        )
 
     def _enforcement_implementation(self) -> str:
         return "::exagrype::ccz4::enforceCCZ4constraintsOfEvolvedVariables(Q);"

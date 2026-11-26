@@ -200,6 +200,17 @@ or exagrype.api.FD4WithKODissipation. The wrapper
 exagrype::ccz4::reconstructFirstDerivativesFD4() hands the halo straight on to
 the routine.
 
+The CCZ4 solver differentiates the derivatives once more for the second
+derivatives. For the pure second derivatives (e.g. the derivative of dLapse[0] along x),
+the Finite Differences use the compact stencil \f$ [-1\ 16\ -30\ 16\ -1]/(12h^2) \f$ of
+the unknown instead of the first derivative of the first derivative, whose error is six
+times larger and which does not see the highest frequency of the grid. The scheme gets
+the table of exagrype.api.FOSOCCZ4Solver.FOSOCCZ4Solver.auxiliary_derivatives() for this
+(src/exahype2/api/rkfd4/adrs/0003-compact-second-derivatives-of-auxiliary-derivatives.md,
+src/exagrype/ccz4/adrs/0006-the-second-order-solver-uses-compact-second-derivatives.md).
+The mixed second derivatives remain first derivatives of first derivatives, so no stencil
+reads the diagonal blocks of the halo.
+
 Until 2026-11 the routine also evaluated the derivatives one layer outside of the
 cell, with the argument of the Finite Volumes below, and the solver required a halo
 of three. The wrapper discarded this layer, and the diagonal blocks of the halo

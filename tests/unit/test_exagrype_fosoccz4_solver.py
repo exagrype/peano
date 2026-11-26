@@ -42,6 +42,7 @@ def _configure(pair, enforce=None):
         right_hand_side_kernel=Kernel.CentralDifferencesWithLopsidedAdvection,
         advection_velocity=exagrype.api.FOSOCCZ4Solver.ADVECTION_VELOCITY,
         advected_quantities=solver.advected_quantities(),
+        auxiliary_derivatives=solver.auxiliary_derivatives(),
     )
     solver.grid_construction = exahype2.api.rkfd4.SetupSimulationOverRegularGrid(
         solver, volume_size=1.0 / 27.0
@@ -490,7 +491,7 @@ def test_reconstruction_takes_the_halo_of_two_of_the_plain_scheme(tmp_path):
     pair = exagrype.api.FOSOSolver("SO")
     solver = pair.ccz4
     pair.numerical_scheme = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(
-        solver, 9, rk_order=4
+        solver, 9, rk_order=4, auxiliary_derivatives=solver.auxiliary_derivatives()
     )
     solver.grid_construction = exahype2.api.rkfd4.SetupSimulationOverRegularGrid(
         solver, volume_size=1.0 / 27.0
@@ -521,7 +522,7 @@ def test_derivative_table_covers_each_derivative_once():
 
     """
     Solver = exagrype.api.FOSOCCZ4Solver
-    unknown, axis, factor = Solver.derivative_table()
+    unknown, axis, factor = Solver("SO").derivative_table()
     assert len(unknown) == len(axis) == len(factor) == 33
     unknowns = sum(Solver.Unknowns.values())
     assert all(0 <= index < unknowns for index in unknown)
@@ -533,7 +534,7 @@ def test_derivative_table_covers_each_derivative_once():
 def test_reconstruction_hands_the_derivative_table_to_the_kernel(tmp_path):
     pair = exagrype.api.FOSOSolver("SO")
     _realise(pair, tmp_path)
-    unknown, axis, factor = exagrype.api.FOSOCCZ4Solver.derivative_table()
+    unknown, axis, factor = pair.ccz4.derivative_table()
     Functor = exagrype.api.actionsets.ApplyReconstructionFunctor
     graph = pair.reconstruction.numerical_scheme.stage_graphs[0]
     (functor,) = [
@@ -554,8 +555,9 @@ def test_reconstruction_hands_the_derivative_table_to_the_kernel(tmp_path):
     "table, message",
     [
         ([("dLapse", "G", 0, 1.0)], "has 3 entries, but 'G' has 6"),
-        ([("dLapse[3]", "lapse", 0, 1.0)], "exceeds"),
-        ([("dLapse[0]", "alpha", 0, 1.0)], "is no variable"),
+        ([("dLapse[3]", "lapse", 0, 1.0)], "is no auxiliary variable"),
+        ([("dLapse[0]", "alpha", 0, 1.0)], "is no unknown"),
+        ([("dLapse[0]", "lapse", 3, 1.0)], "has to be 0, 1 or 2"),
         (
             [("dLapse[0]", "lapse", 0, 1.0), ("dLapse[0]", "lapse", 1, 1.0)],
             "defined twice",
@@ -567,14 +569,46 @@ def test_derivative_table_rejects_inconsistent_definitions(monkeypatch, table, m
     Solver = exagrype.api.FOSOCCZ4Solver
     monkeypatch.setattr(Solver, "auxiliary_derivatives", classmethod(lambda cls: table))
     with pytest.raises(ValueError, match=message):
-        Solver.derivative_table()
+        Solver("SO").derivative_table()
+
+
+@pytest.mark.parametrize(
+    "auxiliary_derivatives",
+    [None, [(f"dLapse[{axis}]", "lapse", axis, 1.0) for axis in range(3)]],
+)
+def test_finite_differences_have_to_get_the_derivative_table(
+    tmp_path, auxiliary_derivatives
+):
+    """!
+
+    src/exagrype/ccz4/adrs/0006-the-second-order-solver-uses-compact-second-derivatives.md:
+    strict, i.e. without the table of the solver or with another one, the
+    realisation fails
+
+    """
+    pair = exagrype.api.FOSOSolver("SO")
+    solver = pair.ccz4
+    pair.numerical_scheme = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(
+        solver, 9, rk_order=4, auxiliary_derivatives=auxiliary_derivatives
+    )
+    solver.grid_construction = exahype2.api.rkfd4.SetupSimulationOverRegularGrid(
+        solver, volume_size=1.0 / 27.0
+    )
+    with pytest.raises(
+        ValueError, match="auxiliary_derivatives=solver.auxiliary_derivatives()"
+    ):
+        _realise_pair(pair, tmp_path)
 
 
 def test_reconstruction_adapts_to_the_larger_halo_of_the_dissipation_scheme(tmp_path):
     pair = exagrype.api.FOSOSolver("SO")
     solver = pair.ccz4
     pair.numerical_scheme = exagrype.api.FD4WithKODissipation(
-        solver, 9, rk_order=4, kreiss_oliger_sigma=1.0
+        solver,
+        9,
+        rk_order=4,
+        kreiss_oliger_sigma=1.0,
+        auxiliary_derivatives=solver.auxiliary_derivatives(),
     )
     solver.grid_construction = exahype2.api.rkfd4.SetupSimulationOverRegularGrid(
         solver, volume_size=1.0 / 27.0

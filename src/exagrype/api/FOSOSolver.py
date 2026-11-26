@@ -91,7 +91,10 @@ class FOSOSolver:
 
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     solver = exagrype.api.FOSOSolver("SO")
-    solver.numerical_scheme = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(solver.ccz4, patch_size, rk_order=4, ...)
+    solver.numerical_scheme = exahype2.api.rkfd4.CentralDifferencesWithRungeKutta(
+      solver.ccz4, patch_size, rk_order=4,
+      auxiliary_derivatives=solver.ccz4.auxiliary_derivatives(), ...
+    )
     ...
     project.add_solver(solver)
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
