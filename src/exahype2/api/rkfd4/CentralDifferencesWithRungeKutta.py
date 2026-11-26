@@ -1147,7 +1147,8 @@ Patch overlap data
 
             ## Reconstruct the stage's input with its halo
             reconstruction_task = peano4.api.taskgraph.Task(
-                name=f"{name}_Reconstruct stage {stage}", entity=Entity.CELL
+                name=f"{name}_{self.RECONSTRUCTION_TASK_NAME} stage {stage}",
+                entity=Entity.CELL,
             )
             time_step.add_task(reconstruction_task)
             if previous_stage_task is not None:

@@ -134,17 +134,18 @@ Both solvers build a task graph of their own (and report it), and the host
 (exagrype.api.FOSOSolver) concatenates them and reports the outcome.
 The graph of the reconstruction solver is one chain of tasks per Runge-Kutta stage
 \f$ s \f$ (one chain for FV). The chains are not connected to each other.
-The host makes the first tasks of each chain take over the dependencies of the reconstruction task of the CCZ4 solver,
-and lets the latter wait for the last task of the chain:
+The host makes the first tasks of each chain take over the dependencies of the two reconstruction tasks of the CCZ4 solver
+(unknowns and derivatives), and lets both wait for the last task of the chain. Interpolation onto the hanging faces is no task
+of its own in the CCZ4 solver, but part of its reconstruction tasks (src/exahype2/api/adrs/0001-interpolation-and-restriction-ride-along-with-face-users.md):
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Project stage s onto faces (SO)
      │
      ├──────────────────────────────────────┐
      ▼                                      ▼
-Reconstruct primary variables s      Reconstruct derivative variables s     (SOReconstruction)
+Interpolate primary variables s      Interpolate derivative variables s     (SOReconstruction)
      ▼                                      ▼
-Interpolate primary variables s      Interpolate derivative variables s
+Reconstruct primary variables s      Reconstruct derivative variables s
      └──────────────────┬───────────────────┘
                         ▼
               Reconstruct derivatives s       (exagrype::ccz4::reconstructFirstDerivativesFD4())
@@ -154,8 +155,12 @@ Interpolate primary variables s      Interpolate derivative variables s
         Restrict derivative variables on hanging faces s   (only if CHANGING_ON_FACES)
                         ▼
         Roll over derivative variable faces s
+     ┌──────────────────┴───────────────────┐
+     ▼                                      ▼
+Reconstruct stage s (SO)             Reconstruct auxiliary variables Derivatives stage s (SO)
+     └──────────────────┬───────────────────┘
                         ▼
-Reconstruct stage s (SO)  ->  Evaluate right-hand side s (SO)  ->  Prepare stage s+1 (SO)  ->  ...
+        Evaluate right-hand side s (SO)  ->  ...  ->  Prepare stage s+1 (SO)  ->  ...
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 From the point of view of the reconstruction solver, the 25 primary variables are auxiliary variables

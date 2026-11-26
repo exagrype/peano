@@ -150,10 +150,6 @@ class FOSOCCZ4Solver(CCZ4SolverBase):
         )
         self.add_auxiliary_variables(self.derivatives)
 
-    @property
-    def task_graph_title_suffix(self) -> str:
-        return " (CCZ4 part)"
-
     def advected_quantities(self) -> List[str]:
         """!
 

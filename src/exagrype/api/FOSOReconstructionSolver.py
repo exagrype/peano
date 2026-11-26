@@ -65,14 +65,12 @@ class FOSOReconstructionSolver(exahype2.api.Solver):
 
     The graph has no dependencies between stages. The host concatenates the graph with the
     one of the CCZ4 solver (exagrype.api.FOSOSolver._couple()): The first tasks of
-    a stage wait for what the CCZ4 solver's interpolation of the derivatives
-    in this stage waited for, and the interpolation of the primary variables
-    additionally waits for the CCZ4 solver's interpolation of the unknowns (both
-    write the same faces).
-    The chain is a block between the CCZ4 solver's interpolation of the unknowns and
-    the rest of the stage: The CCZ4 solver's interpolation of the derivatives
-    (and thus the reconstruction of their halos) and its reconstruction of
-    the unknowns wait for the last task. In terms of
+    a stage wait for what the CCZ4 solver's reconstructions of the unknowns and
+    of the derivatives in this stage waited for (partner_task_names()). Both
+    read the face data which the chain reads or writes, and each interpolates
+    its face data onto the hanging faces itself.
+    The chain is a block in front of the rest of the stage: Both
+    reconstructions of the CCZ4 solver wait for the last task. In terms of
     @ref page_exahype_programmers_guide_coupling, this is a multiplicative
     coupling, with the coupling repeated per stage.
 
@@ -128,10 +126,6 @@ class FOSOReconstructionSolver(exahype2.api.Solver):
         self.grid_construction = FOSOReconstructionSolver.NoGridConstruction(self)
         self.add_user_solver_includes('\n#include "repositories/SolverRepository.h"\n')
         self._forward_time_stamps_and_time_step_sizes()
-
-    @property
-    def task_graph_title_suffix(self) -> str:
-        return f" (reconstruction part of {self.ccz4.name})"
 
     def _forward_time_stamps_and_time_step_sizes(self):
         """!
@@ -213,23 +207,36 @@ class FOSOReconstructionSolver(exahype2.api.Solver):
 
         Names of the tasks of the CCZ4 solver which the reconstruction of a stage interacts with
 
+        These are the two tasks of the stage which read the face data that
+        the reconstruction reads or writes. Each of them also interpolates its
+        face data onto the hanging faces, as interpolation is no task of its
+        own (src/exahype2/api/adrs/0001-interpolation-and-restriction-ride-along-with-face-users.md).
+
         @param stage: int
           Stage of the Runge-Kutta scheme, 0 for Finite Volumes.
 
-        @return unknowns_interpolation, derivatives_interpolation, reconstruction
-          Names of the tasks that interpolate the unknowns onto hanging faces,
-          interpolate the derivatives, and reconstruct the unknowns (halo).
-          The first reconstruction tasks of the stage wait for what the second one
-          waits for, and the second and third one wait for the last
+        @return unknowns_reconstruction, derivatives_reconstruction
+          Names of the tasks that reconstruct the halo of the unknowns and
+          the one of the derivatives. The first reconstruction tasks of the
+          stage wait for what these two wait for, and both wait for the last
           reconstruction task. @ref exagrype.api.FOSOSolver._couple()
+
+        @todo The suffix " stage k" is a convention which this routine and
+          exahype2.api.rkfd4.CentralDifferencesWithRungeKutta spell out
+          independently. If the scheme changes it, the lookup in _couple()
+          fails. The schemes should rather offer a routine which yields the
+          name of the reconstruction task of stage k (the Finite Volumes
+          without suffix), and this routine should call it.
 
         """
         ccz4 = self.ccz4
         suffix = f" stage {stage}" if self._layout()[4] else ""
+        derivatives = exahype2.api.AuxiliaryVariables.RECONSTRUCTION_TASK_NAME.format(
+            ccz4.derivatives.name
+        )
         return (
-            f"{ccz4.name}_Interpolate hanging faces{suffix}",
-            f"{ccz4.name}_Interpolate {ccz4.derivatives.name} on hanging faces{suffix}",
-            f"{ccz4.name}_Reconstruct{suffix}",
+            f"{ccz4.name}_{ccz4.numerical_scheme.RECONSTRUCTION_TASK_NAME}{suffix}",
+            f"{ccz4.name}_{derivatives}{suffix}",
         )
 
     def create_task_graph(

@@ -6,7 +6,7 @@ import exahype2.api
 import exagrype.api
 
 
-def _project(tmp_path):
+def _project(tmp_path, periodic_BC=(True, True, True)):
     exahype2_project = exahype2.api.Project(
         ["probe"], "probe", "probe", directory=str(tmp_path)
     )
@@ -15,7 +15,7 @@ def _project(tmp_path):
         offset=[0.0, 0.0, 0.0],
         size=[1.0, 1.0, 1.0],
         min_end_time=1.0,
-        periodic_BC=[True, True, True],
+        periodic_BC=list(periodic_BC),
     )
     return exahype2_project, peano4.api.Project(["probe"], "probe", str(tmp_path))
 
@@ -281,13 +281,9 @@ def test_host_reports_the_concatenated_graph(tmp_path, monkeypatch):
         _realise(exagrype.api.FOSOSolver("SO"), tmp_path)
     finally:
         peano4.api.Logger().verbosity = previous
-    own_ccz4 = titles["Time stepping task graph for SO (CCZ4 part)"]
-    own_reconstruction = titles[
-        "Time stepping task graph for SOReconstruction (reconstruction part of SO)"
-    ]
-    host = titles[
-        "Time stepping task graph for host SO (concatenation of the graphs of SO, SOReconstruction)"
-    ]
+    own_ccz4 = titles["Time stepping task graph for SO"]
+    own_reconstruction = titles["Time stepping task graph for SOReconstruction"]
+    host = titles["Time stepping task graph for host SO"]
     assert not any("Reconstruct derivatives" in name for name in own_ccz4)
     assert len(own_reconstruction) == 4 * 8
     # The host adds the global tasks after it has concatenated the graphs
@@ -317,45 +313,77 @@ def test_reconstruction_solver_forwards_the_time_step_data_of_the_ccz4_solver(tm
     assert "SolverRepository.h" in pair.reconstruction.user_solver_includes
 
 
+def _chain(pair, stage):
+    """! First tasks and last task of the reconstruction chain of a stage"""
+    graph = pair.reconstruction.numerical_scheme.stage_graphs[stage]
+    (last,) = graph.sink_tasks()
+    return graph.source_tasks(), last
+
+
+def _partners(pair, time_step, stage):
+    """! The tasks of the CCZ4 solver which the chain of a stage runs in front of"""
+    tasks = {task.name: task for task in time_step.tasks}
+    return [tasks[name] for name in pair.reconstruction.partner_task_names(stage)]
+
+
 def test_reconstruction_solver_takes_turns_with_each_stage_of_the_solver(tmp_path):
-    time_step = _realise(exagrype.api.FOSOSolver("SO"), tmp_path)
+    pair = exagrype.api.FOSOSolver("SO")
+    time_step = _realise(pair, tmp_path)
     order = time_step.ordered_tasks()
     for stage in range(4):
-        reconstruct = next(
-            task
-            for task in order
-            if task.name == f"SO_Interpolate Derivatives on hanging faces stage {stage}"
-        )
-        chain = {
-            task.name: task
-            for task in order
-            if task.name.startswith("SOReconstruction_")
-            and task.name.endswith(f" stage {stage}")
-        }
-        first_tasks = [
-            chain[
-                f"SOReconstruction_Interpolate primary variables on hanging faces stage {stage}"
-            ],
-            chain[
-                f"SOReconstruction_Interpolate derivative variables on hanging faces stage {stage}"
-            ],
-        ]
-        last = chain[
-            f"SOReconstruction_Roll over derivative variable faces stage {stage}"
-        ]
-        assert last in reconstruct.dependencies
-        assert order.index(last) < order.index(reconstruct)
-        if stage > 0:
-            # The reconstruction follows what the solver's reconstruction followed
+        first_tasks, last = _chain(pair, stage)
+        assert len(first_tasks) == 2
+        partners = _partners(pair, time_step, stage)
+        assert len(partners) == 2
+        for partner in partners:
+            assert last in partner.dependencies
+            assert order.index(last) < order.index(partner)
+            # The chain follows what the CCZ4 solver's reconstructions followed
             for first in first_tasks:
-                assert any(
-                    dependency.name.startswith("SO_Roll over stage")
-                    or dependency.name.startswith("SO_Roll over solution")
+                for dependency in partner.dependencies:
+                    if dependency is not last:
+                        assert dependency in first.dependencies
+        if stage > 0:
+            # ... which is the previous stage
+            for first in first_tasks:
+                assert first.dependencies
+                assert all(
+                    order.index(dependency) < order.index(first)
                     for dependency in first.dependencies
                 )
-                assert f"SO_Prepare stage {stage}" in {
-                    task.name for task in order[: order.index(first)]
-                }
+
+
+def test_reconstruction_waits_for_the_dirichlet_boundary_conditions(tmp_path):
+    """!
+
+    The chain reads the faces of the unknowns, whose ghost values the
+    boundary task of the CCZ4 solver sets. Only the reconstruction of the
+    unknowns waits for the boundary task, the one of the derivatives does not.
+
+    """
+    pair = exagrype.api.FOSOSolver("SO")
+    _configure(pair)
+    pair.ccz4.add_pde_term(
+        exahype2.api.DirichletBoundaryConditions(implementation="Q[0] = 1.0;")
+    )
+    exahype2_project, peano_project = _project(tmp_path, periodic_BC=(False, True, True))
+    graphs = [peano4.api.taskgraph.Graph() for _ in range(4)]
+    pair.generate_solver_realisation(exahype2_project, peano_project, *graphs)
+    time_step = graphs[1]
+    order = time_step.ordered_tasks()
+    Boundary = exahype2.api.rkfd4.actionsets.ApplyDirichletBoundaryConditions
+    for stage in range(4):
+        reconstruct, reconstruct_derivatives = _partners(pair, time_step, stage)
+        (boundary,) = [
+            task
+            for task in reconstruct.dependencies
+            if any(isinstance(action_set, Boundary) for action_set in task.action_sets)
+        ]
+        assert boundary not in reconstruct_derivatives.dependencies
+        first_tasks, _ = _chain(pair, stage)
+        for first in first_tasks:
+            assert boundary in first.dependencies
+            assert order.index(boundary) < order.index(first)
 
 
 def test_reconstruction_keeps_the_data_it_shares_with_the_solver_alive(tmp_path):
@@ -398,19 +426,12 @@ def test_reconstruction_runs_in_front_of_the_finite_volume_update(tmp_path):
     solver.grid_construction = exahype2.api.fv.SetupSimulationOverRegularGrid(
         solver, volume_size=1.0 / 27.0
     )
-    order = _realise_pair(pair, tmp_path).ordered_tasks()
-    reconstruct = next(
-        task
-        for task in order
-        if task.name == "SO_Interpolate Derivatives on hanging faces"
-    )
-    last = next(
-        task
-        for task in order
-        if task.name == "SOReconstruction_Roll over derivative variable faces"
-    )
-    assert last in reconstruct.dependencies
-    assert order.index(last) < order.index(reconstruct)
+    time_step = _realise_pair(pair, tmp_path)
+    order = time_step.ordered_tasks()
+    _, last = _chain(pair, 0)
+    for partner in _partners(pair, time_step, 0):
+        assert last in partner.dependencies
+        assert order.index(last) < order.index(partner)
     assert sum("Reconstruct derivatives" in task.name for task in order) == 1
 
 
@@ -464,35 +485,22 @@ def test_pde_terms_are_stateless(solver_class):
             solver.get_pde_term(name)
 
 
-def test_interpolations_and_reconstructions_of_the_ccz4_solver_run_in_parallel(
-    tmp_path,
-):
-    time_step = _realise(exagrype.api.FOSOSolver("SO"), tmp_path)
-    tasks = {task.name: task for task in time_step.tasks}
+def test_reconstructions_of_the_ccz4_solver_run_in_parallel(tmp_path):
+    pair = exagrype.api.FOSOSolver("SO")
+    time_step = _realise(pair, tmp_path)
     for stage in range(4):
-        unknowns = tasks[f"SO_Interpolate hanging faces stage {stage}"]
-        derivatives = tasks[
-            f"SO_Interpolate Derivatives on hanging faces stage {stage}"
-        ]
-        reconstruct = tasks[f"SO_Reconstruct stage {stage}"]
-        reconstruct_derivatives = tasks[
-            f"SO_Reconstruct auxiliary variables Derivatives stage {stage}"
-        ]
-        chain_end = tasks[
-            f"SOReconstruction_Roll over derivative variable faces stage {stage}"
-        ]
+        reconstruct, reconstruct_derivatives = _partners(pair, time_step, stage)
+        _, chain_end = _chain(pair, stage)
         # The unknowns do not wait for the derivatives and vice versa
-        assert unknowns not in derivatives.dependencies
-        assert derivatives not in unknowns.dependencies
-        assert unknowns in reconstruct.dependencies
-        assert derivatives in reconstruct_derivatives.dependencies
         assert reconstruct_derivatives not in reconstruct.dependencies
         assert reconstruct not in reconstruct_derivatives.dependencies
         # The reconstruction chain is a block in front of both
         assert chain_end in reconstruct.dependencies
-        # The derivatives are interpolated after they have been recomputed
-        assert chain_end in derivatives.dependencies
+        assert chain_end in reconstruct_derivatives.dependencies
         # The right-hand side waits for both reconstructions
-        rhs = tasks[f"SO_Evaluate Runge-Kutta right hand side stage {stage}"]
-        assert reconstruct in rhs.dependencies
-        assert reconstruct_derivatives in rhs.dependencies
+        right_hand_side = [
+            task for task in time_step.tasks if reconstruct in task.dependencies
+        ]
+        assert right_hand_side
+        for task in right_hand_side:
+            assert reconstruct_derivatives in task.dependencies
