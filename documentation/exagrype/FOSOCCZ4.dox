@@ -143,18 +143,14 @@ Project stage s onto faces (SO)
      │
      ├──────────────────────────────────────┐
      ▼                                      ▼
-Interpolate primary variables s      Interpolate derivative variables s     (SOReconstruction)
-     ▼                                      ▼
-Reconstruct primary variables s      Reconstruct derivative variables s
+Reconstruct primary variables s      Reconstruct derivative variables s     (SOReconstruction,
+(interpolates hanging faces first)   (interpolates hanging faces first)      one chain per stage)
      └──────────────────┬───────────────────┘
                         ▼
               Reconstruct derivatives s       (exagrype::ccz4::reconstructFirstDerivativesFD4())
                         ▼
         Project derivative variables onto faces s
-                        ▼
-        Restrict derivative variables on hanging faces s   (only if CHANGING_ON_FACES)
-                        ▼
-        Roll over derivative variable faces s
+        (restricts hanging faces, only if CHANGING_ON_FACES, and rolls over)
      ┌──────────────────┴───────────────────┐
      ▼                                      ▼
 Reconstruct stage s (SO)             Reconstruct auxiliary variables Derivatives stage s (SO)
@@ -166,11 +162,17 @@ Reconstruct stage s (SO)             Reconstruct auxiliary variables Derivatives
 From the point of view of the reconstruction solver, the 25 primary variables are auxiliary variables
 and the derivatives are its unknowns. Both sit on the faces, i.e. we reconstruct the halos of both and interpolate
 both onto hanging faces. Only the derivatives are projected, restricted and rolled over, as only they change.
+Interpolation and restriction are no tasks of their own, but action sets of the tasks which read or write the face
+data (src/exahype2/api/adrs/0001-interpolation-and-restriction-ride-along-with-face-users.md): Peano creates a
+hanging face before it enters the fine cell and destroys it after it has left the cell, i.e. within one task the
+interpolation precedes the reconstruction and the restriction follows the projection.
 Restricting depends on the mode of the derivatives (@ref exahype2.api.AuxiliaryVariables.Mode), which is
 CHANGING_ON_FACES here, while general auxiliary variables default to STATIONARY_ON_FACES.
-The projection, the restriction and the roll over share the temporary update patch of the face data.
-They therefore have to end up in one mesh sweep. As the task graph compiler does not fuse tasks with
-conflicting face data, the projection declares that it writes the face data: it starts a new sweep that way.
+The projection, the restriction and the roll over share the temporary update patch of the face data, which
+lives for one mesh sweep only. They therefore are action sets of one task, as in
+src/exahype2/api/fv/adrs/0003-roll-over-is-part-of-the-projection.md, and do not rely on the task graph compiler
+to fuse them. The projection task declares that it writes the face data. As the compiler does not fuse tasks
+with conflicting face data, it starts a new sweep that way.
 
 The host realises the CCZ4 solver first, as the reconstruction solver needs its data. The CCZ4 solver
 owns the global tasks (load balancing switch, dynamic mesh refinement), see @ref page_exahype_programmers_guide_coupling.

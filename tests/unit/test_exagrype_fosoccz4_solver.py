@@ -4,6 +4,7 @@ import peano4.api
 import peano4.api.taskgraph
 import exahype2.api
 import exagrype.api
+import toolbox.blockstructured.api
 
 
 def _project(tmp_path, periodic_BC=(True, True, True)):
@@ -243,21 +244,13 @@ def test_solvers_build_separate_graphs_which_the_host_concatenates(tmp_path):
     assert ccz4_graph is not recon_graph
     assert ccz4_graph is not project_graphs[1]
     assert not any("Reconstruct derivatives" in name for name, _ in ccz4_tasks)
-    chain = [
-        ("Reconstruct primary variables", 1),
-        ("Interpolate primary variables on hanging faces", 0),
-        ("Interpolate derivative variables on hanging faces", 0),
-        ("Reconstruct derivative variables", 1),
-        ("Reconstruct derivatives", 2),
-        ("Project derivative variables onto faces", 1),
-        ("Restrict derivative variables on hanging faces", 1),
-        ("Roll over derivative variable faces", 1),
-    ]
-    assert recon_tasks == [
-        (f"SOReconstruction_{task_name} stage {stage}", dependencies)
-        for stage in range(4)
-        for task_name, dependencies in chain
-    ]
+    # Per stage: two reconstructions of the halos, the stencil and the
+    # projection, i.e. one chain without dependencies on other stages
+    assert [dependencies for _, dependencies in recon_tasks] == [0, 0, 2, 1] * 4
+    assert all(
+        name.endswith(f" stage {index // 4}")
+        for index, (name, _) in enumerate(recon_tasks)
+    )
     # Concatenation: the project holds the tasks of both, wrapped into the global tasks
     assert len(project_graphs[1].tasks) == len(ccz4_tasks) + len(recon_tasks) + 2
     # Both are intermediate steps: The host adds the global tasks afterwards
@@ -285,7 +278,7 @@ def test_host_reports_the_concatenated_graph(tmp_path, monkeypatch):
     own_reconstruction = titles["Time stepping task graph for SOReconstruction"]
     host = titles["Time stepping task graph for host SO"]
     assert not any("Reconstruct derivatives" in name for name in own_ccz4)
-    assert len(own_reconstruction) == 4 * 8
+    assert len(own_reconstruction) == 4 * 4
     # The host adds the global tasks after it has concatenated the graphs
     assert sorted(host) == sorted(
         own_ccz4
@@ -366,7 +359,9 @@ def test_reconstruction_waits_for_the_dirichlet_boundary_conditions(tmp_path):
     pair.ccz4.add_pde_term(
         exahype2.api.DirichletBoundaryConditions(implementation="Q[0] = 1.0;")
     )
-    exahype2_project, peano_project = _project(tmp_path, periodic_BC=(False, True, True))
+    exahype2_project, peano_project = _project(
+        tmp_path, periodic_BC=(False, True, True)
+    )
     graphs = [peano4.api.taskgraph.Graph() for _ in range(4)]
     pair.generate_solver_realisation(exahype2_project, peano_project, *graphs)
     time_step = graphs[1]
@@ -384,6 +379,45 @@ def test_reconstruction_waits_for_the_dirichlet_boundary_conditions(tmp_path):
         for first in first_tasks:
             assert boundary in first.dependencies
             assert order.index(boundary) < order.index(first)
+
+
+def test_reconstruction_interpolates_and_restricts_within_the_tasks_using_the_faces(
+    tmp_path,
+):
+    """!
+
+    src/exahype2/api/adrs/0001-interpolation-and-restriction-ride-along-with-face-users.md:
+    no task of the chain holds nothing but an interpolation or a restriction
+
+    """
+    pair = exagrype.api.FOSOSolver("SO")
+    _realise(pair, tmp_path)
+    Interpolate = toolbox.blockstructured.api.InterpolateHangingFaces
+    Restrict = toolbox.blockstructured.api.RestrictHangingFaces
+    Reconstruct = toolbox.blockstructured.api.ReconstructPatchWithHalo
+    Project = exahype2.api.rkfd4.actionsets.ProjectPatchOntoFaces
+    for stage in range(4):
+        graph = pair.reconstruction.numerical_scheme.stage_graphs[stage]
+        for task in graph.tasks:
+            assert not all(
+                isinstance(action_set, (Interpolate, Restrict))
+                for action_set in task.action_sets
+            )
+        first_tasks, _ = _chain(pair, stage)
+        for first in first_tasks:
+            types = [type(action_set) for action_set in first.action_sets]
+            assert types == [Interpolate, Reconstruct]
+        (project,) = [
+            task
+            for task in graph.tasks
+            if any(isinstance(action_set, Project) for action_set in task.action_sets)
+        ]
+        # The roll over shares the temporary update with the projection
+        assert [type(action_set) for action_set in project.action_sets] == [
+            Project,
+            Restrict,
+            exahype2.api.rkfd4.actionsets.RollOverUpdatedFace,
+        ]
 
 
 def test_reconstruction_keeps_the_data_it_shares_with_the_solver_alive(tmp_path):
