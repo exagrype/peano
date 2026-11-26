@@ -2,7 +2,7 @@
  use, please see the copyright notice at www.peano-framework.org
 """
 
-from typing import Dict, List, Union
+from typing import Dict, List, Tuple, Union
 
 import exahype2.api
 
@@ -187,6 +187,104 @@ class FOSOCCZ4Solver(CCZ4SolverBase):
         if self._parameters["CCZ4b"] == 0 or self._parameters["CCZ4s"] == 0:
             excluded |= {"shift", "b"}
         return [name for name in self.Unknowns if name not in excluded]
+
+    @classmethod
+    def auxiliary_derivatives(cls) -> List[Tuple[str, str, int, float]]:
+        """!
+
+        Which unknown each auxiliary variable differentiates
+
+        Each entry (derivative, unknown, axis, factor) states that the
+        auxiliary variable derivative equals factor times the derivative of
+        the unknown along axis, entry by entry: dxG holds
+        @f$ D_{xij} = \\frac{1}{2} \\partial _x \\tilde \\gamma _{ij} @f$, i.e. the
+        six entries of dxG belong to the six entries of G with the factor
+        one half. A name with an index (dLapse[0]) selects one entry of a
+        variable, a name without an index all of them.
+
+        The table is the only definition of the derivatives. The
+        reconstruction (exagrype.api.FOSOReconstructionSolver) hands it to
+        exagrype::ccz4::reconstructFirstDerivativesFD4(), and it must not be
+        repeated anywhere else
+        (src/exagrype/ccz4/adrs/0005-one-table-defines-the-auxiliary-derivatives.md).
+
+        @return List[Tuple[str, str, int, float]]
+          Names of a derivative (@ref DerivativeUnknowns) and of an unknown
+          (@ref Unknowns), the axis and the factor. Together, the entries
+          cover each of the 33 derivatives exactly once.
+
+        """
+        result = []
+        for axis, name in enumerate("xyz"):
+            result += [
+                (f"dLapse[{axis}]", "lapse", axis, 1.0),
+                (f"d{name}Shift", "shift", axis, 1.0),
+                (f"d{name}G", "G", axis, 0.5),
+                (f"P[{axis}]", "phi", axis, 1.0),
+            ]
+        return result
+
+    @classmethod
+    def derivative_table(cls) -> Tuple[List[int], List[int], List[float]]:
+        """!
+
+        auxiliary_derivatives() per entry of the auxiliary variables
+
+        @return differentiated_unknown, axis, factor
+          Three lists with one element per entry of DerivativeUnknowns: the
+          index of the differentiated unknown, the axis and the factor.
+
+        @exception ValueError if auxiliary_derivatives() names an unknown
+          variable, pairs variables with different numbers of entries or does
+          not cover each derivative exactly once.
+
+        """
+
+        def entries(variables: Dict[str, int], name: str) -> List[int]:
+            variable, _, index = name.partition("[")
+            if variable not in variables:
+                raise ValueError(
+                    f"{cls.__name__}: {name!r} is no variable of {sorted(variables)}"
+                )
+            names = list(variables)
+            first = sum(variables[other] for other in names[: names.index(variable)])
+            if index:
+                position = int(index.rstrip("]"))
+                if not 0 <= position < variables[variable]:
+                    raise ValueError(
+                        f"{cls.__name__}: {name!r} exceeds the {variables[variable]} "
+                        f"entries of {variable}"
+                    )
+                return [first + position]
+            return list(range(first, first + variables[variable]))
+
+        size = cls._number_of_derivatives()
+        differentiated_unknown = [None] * size
+        axis = [None] * size
+        factor = [None] * size
+        for derivative, unknown, direction, scaling in cls.auxiliary_derivatives():
+            targets = entries(cls.DerivativeUnknowns, derivative)
+            sources = entries(cls.Unknowns, unknown)
+            if len(targets) != len(sources):
+                raise ValueError(
+                    f"{cls.__name__}: {derivative!r} has {len(targets)} entries, "
+                    f"but {unknown!r} has {len(sources)}"
+                )
+            for target, source in zip(targets, sources):
+                if differentiated_unknown[target] is not None:
+                    raise ValueError(
+                        f"{cls.__name__}: derivative entry {target} is defined twice"
+                    )
+                differentiated_unknown[target] = source
+                axis[target] = direction
+                factor[target] = scaling
+        missing = [index for index, value in enumerate(axis) if value is None]
+        if missing:
+            raise ValueError(
+                f"{cls.__name__}: auxiliary_derivatives() does not define the "
+                f"derivative entries {missing}"
+            )
+        return differentiated_unknown, axis, factor
 
     def _enforcement_implementation(self) -> str:
         return "::exagrype::ccz4::enforceCCZ4constraintsOfEvolvedVariables(Q);"

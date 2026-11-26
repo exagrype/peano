@@ -510,11 +510,64 @@ def test_reconstruction_takes_the_halo_of_two_of_the_plain_scheme(tmp_path):
         body = functor.get_body_of_operation(
             peano4.api.solversteps.ActionSet.OPERATION_TOUCH_CELL_FIRST_TIME
         )
-        # Patch size 9, halo 2
-        assert (
-            "reconstructFirstDerivativesFD4(oldQWithHalo, marker.h(), 9, 2, newQ)"
-            in body
-        )
+        # Patch size 9, halo 2, 25 unknowns, 33 derivatives
+        assert "oldQWithHalo, marker.h(), 9, 2, 25, 33," in body
+
+
+def test_derivative_table_covers_each_derivative_once():
+    """!
+
+    src/exagrype/ccz4/adrs/0005-one-table-defines-the-auxiliary-derivatives.md
+
+    """
+    Solver = exagrype.api.FOSOCCZ4Solver
+    unknown, axis, factor = Solver.derivative_table()
+    assert len(unknown) == len(axis) == len(factor) == 33
+    unknowns = sum(Solver.Unknowns.values())
+    assert all(0 <= index < unknowns for index in unknown)
+    assert set(axis) == {0, 1, 2}
+    # Each derivative of a variable along an axis appears once
+    assert len(set(zip(unknown, axis))) == 33
+
+
+def test_reconstruction_hands_the_derivative_table_to_the_kernel(tmp_path):
+    pair = exagrype.api.FOSOSolver("SO")
+    _realise(pair, tmp_path)
+    unknown, axis, factor = exagrype.api.FOSOCCZ4Solver.derivative_table()
+    Functor = exagrype.api.actionsets.ApplyReconstructionFunctor
+    graph = pair.reconstruction.numerical_scheme.stage_graphs[0]
+    (functor,) = [
+        action_set
+        for task in graph.tasks
+        for action_set in task.action_sets
+        if isinstance(action_set, Functor)
+    ]
+    body = functor.get_body_of_operation(
+        peano4.api.solversteps.ActionSet.OPERATION_TOUCH_CELL_FIRST_TIME
+    )
+    assert "{" + ", ".join(str(i) for i in unknown) + "}" in body
+    assert "{" + ", ".join(str(i) for i in axis) + "}" in body
+    assert "{" + ", ".join(repr(f) for f in factor) + "}" in body
+
+
+@pytest.mark.parametrize(
+    "table, message",
+    [
+        ([("dLapse", "G", 0, 1.0)], "has 3 entries, but 'G' has 6"),
+        ([("dLapse[3]", "lapse", 0, 1.0)], "exceeds"),
+        ([("dLapse[0]", "alpha", 0, 1.0)], "is no variable"),
+        (
+            [("dLapse[0]", "lapse", 0, 1.0), ("dLapse[0]", "lapse", 1, 1.0)],
+            "defined twice",
+        ),
+        ([("dLapse[0]", "lapse", 0, 1.0)], "does not define"),
+    ],
+)
+def test_derivative_table_rejects_inconsistent_definitions(monkeypatch, table, message):
+    Solver = exagrype.api.FOSOCCZ4Solver
+    monkeypatch.setattr(Solver, "auxiliary_derivatives", classmethod(lambda cls: table))
+    with pytest.raises(ValueError, match=message):
+        Solver.derivative_table()
 
 
 def test_reconstruction_adapts_to_the_larger_halo_of_the_dissipation_scheme(tmp_path):

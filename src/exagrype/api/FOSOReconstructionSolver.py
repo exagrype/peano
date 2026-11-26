@@ -258,6 +258,39 @@ class FOSOReconstructionSolver(exahype2.api.Solver):
             f"{ccz4.name}_{derivatives}{suffix}",
         )
 
+    def _reconstruction_call(self, reconstruction_function: str, n: int, h: int) -> str:
+        """!
+
+        C++ which recomputes the derivatives of a cell from its unknowns
+
+        The call hands the table of the CCZ4 solver
+        (@ref exagrype.api.FOSOCCZ4Solver.FOSOCCZ4Solver.derivative_table()) to
+        the C++ routine, which knows nothing about CCZ4 itself
+        (src/exagrype/ccz4/adrs/0005-one-table-defines-the-auxiliary-derivatives.md).
+
+        @param reconstruction_function: str
+          exagrype::ccz4::reconstructFirstDerivativesFD4 or
+          exagrype::ccz4::reconstructFirstDerivativesCentralDifferences.
+
+        @param n: int
+          Grid cells per axis of a patch.
+
+        @param h: int
+          Halo of the reconstructed unknowns.
+
+        """
+        ccz4 = self.ccz4
+        unknown, axis, factor = ccz4.derivative_table()
+        return f"""{{
+    constexpr int    differentiatedUnknown[] = {{{", ".join(str(i) for i in unknown)}}};
+    constexpr int    axis[]                  = {{{", ".join(str(i) for i in axis)}}};
+    constexpr double factor[]                = {{{", ".join(repr(f) for f in factor)}}};
+    ::exagrype::ccz4::{reconstruction_function}(
+      oldQWithHalo, marker.h(), {n}, {h}, {ccz4.unknowns}, {len(unknown)},
+      differentiatedUnknown, axis, factor, newQ
+    );
+  }}"""
+
     def create_task_graph(
         self, exahype2_project, peano_project, stage: int, number_of_stages: int
     ):
@@ -329,10 +362,7 @@ class FOSOReconstructionSolver(exahype2.api.Solver):
             )
         primary_halo, derivative_halo = self._scratch_halos
 
-        functor = (
-            f"::exagrype::ccz4::{reconstruction_function}("
-            f"oldQWithHalo, marker.h(), {n}, {h}, newQ);"
-        )
+        functor = self._reconstruction_call(reconstruction_function, n, h)
 
         stage_input = ccz4._patch if stage == 0 else ccz4._stage_input
         suffix = f" stage {stage}" if per_stage else ""

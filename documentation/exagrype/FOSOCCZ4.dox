@@ -45,8 +45,11 @@ has to create and add to the project:
 Both see the same 58 entries, but with swapped roles.
 
 - The reconstruction solver runs first. A task of it invokes the reconstruction of the
-  quantities that the first-order CCZ4 solver requires (exagrype::ccz4::recomputeAuxiliaryVariablesFD4_4thOrder()).
-  It computes these derivatives from the primary variables with halo. The derivatives
+  quantities that the first-order CCZ4 solver requires (exagrype::ccz4::reconstructFirstDerivativesFD4()).
+  It computes these derivatives from the primary variables with halo. Which unknown
+  each derivative differentiates, along which axis and with which factor is defined once,
+  in exagrype.api.FOSOCCZ4Solver.FOSOCCZ4Solver.auxiliary_derivatives(), and handed to the routine
+  (src/exagrype/ccz4/adrs/0005-one-table-defines-the-auxiliary-derivatives.md). The derivatives
   are then projected onto the faces.
 - The solver finds the derivatives with a halo, reconstructs its own 25
   unknowns with a halo, and calls the very same CCZ4 kernels as
@@ -183,7 +186,7 @@ sweeps.
 
 ## FD4 specifics
 
-The routine recomputeAuxiliaryVariablesFD4_4thOrder() uses the stencil
+The routine exagrype::ccz4::reconstructFirstDerivativesFD4() uses the stencil
 \f$ [1\ -8\ 0\ 8\ -1]/(12h) \f$ on the grid cells of the cell itself, i.e. it
 needs a halo of two. The Finite Differences evaluate all terms at the grid cells,
 not on faces. The right-hand side of a grid cell needs the derivatives two grid
